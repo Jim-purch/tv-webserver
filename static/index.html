@@ -1,0 +1,1363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="TV Web Server - 自动轮播网页展示系统">
+    <title>TV Web Display</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a0a;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+        }
+
+        /* Container for the iframe display */
+        #display-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        /* The dynamic iframes showing pages */
+        .display-iframe {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border: none;
+            background: #111;
+            transition: opacity 0.5s ease;
+            opacity: 0;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .display-iframe.active {
+            opacity: 1;
+            pointer-events: auto;
+            z-index: 2;
+        }
+
+        /* Status bar overlay */
+        #status-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: linear-gradient(135deg, rgba(10, 10, 30, 0.95), rgba(15, 52, 96, 0.92));
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            padding: 8px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            transform: translateY(-100%);
+            transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+        }
+
+        #status-bar.visible {
+            transform: translateY(0);
+        }
+
+        #status-bar .info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            color: #e0e0e0;
+            font-size: 13px;
+        }
+
+        #status-bar .info .label {
+            color: #00d4ff;
+            font-weight: 600;
+        }
+
+        #status-bar .progress-container {
+            flex: 1;
+            max-width: 300px;
+            margin: 0 20px;
+        }
+
+        #progress-bar {
+            width: 100%;
+            height: 3px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        #progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00d4ff, #0099ff);
+            border-radius: 2px;
+            transition: width 0.3s linear;
+            width: 0%;
+        }
+
+        #status-bar .controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        #status-bar button {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #e0e0e0;
+            padding: 5px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+
+        #status-bar button:hover {
+            background: rgba(0, 212, 255, 0.2);
+            border-color: rgba(0, 212, 255, 0.4);
+            color: #00d4ff;
+        }
+
+        #status-bar button.active {
+            background: rgba(0, 212, 255, 0.25);
+            border-color: #00d4ff;
+            color: #00d4ff;
+        }
+
+        /* Page indicators */
+        #page-indicators {
+            position: fixed;
+            bottom: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 8px;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        #page-indicators.visible {
+            opacity: 1;
+        }
+
+        .indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.3);
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .indicator.active {
+            background: #00d4ff;
+            box-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
+            transform: scale(1.3);
+        }
+
+        /* Loading screen */
+        #loading-screen {
+            position: fixed;
+            inset: 0;
+            background: linear-gradient(135deg, #0a0a1a, #1a1a3e);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            transition: opacity 0.5s ease;
+        }
+
+        #loading-screen.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .loader {
+            width: 50px;
+            height: 50px;
+            border: 3px solid rgba(0, 212, 255, 0.1);
+            border-top-color: #00d4ff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        .loader-text {
+            color: #8899aa;
+            margin-top: 20px;
+            font-size: 14px;
+            letter-spacing: 1px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Empty state */
+        #empty-state {
+            position: fixed;
+            inset: 0;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #0a0a1a, #1a1a3e);
+            color: #8899aa;
+            z-index: 1500;
+        }
+
+        #empty-state.visible {
+            display: flex;
+        }
+
+        #empty-state .icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+
+        #empty-state h2 {
+            color: #e0e0e0;
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        #empty-state a {
+            color: #00d4ff;
+            text-decoration: none;
+            margin-top: 20px;
+            padding: 10px 25px;
+            border: 1px solid rgba(0, 212, 255, 0.3);
+            border-radius: 8px;
+            transition: all 0.3s;
+        }
+
+        #empty-state a:hover {
+            background: rgba(0, 212, 255, 0.1);
+            border-color: #00d4ff;
+        }
+
+        /* Hover trigger zones */
+        #hover-trigger-top {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 20px;
+            z-index: 999;
+        }
+
+        #hover-trigger-bottom {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 20px;
+            z-index: 999;
+        }
+
+        /* ===== Celebration Overlay ===== */
+        #celebration-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 2000;
+            display: none;
+            opacity: 0;
+            transition: opacity 0.6s ease;
+        }
+
+        #celebration-overlay.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #celebration-overlay.visible {
+            opacity: 1;
+        }
+
+        #celebration-bg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(ellipse at center, #1a0a2e 0%, #0d0015 50%, #000 100%);
+        }
+
+        #confetti-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .celebration-content {
+            position: relative;
+            z-index: 2;
+            text-align: center;
+            color: #fff;
+            padding: 40px;
+        }
+
+        .celebration-title {
+            font-size: clamp(48px, 8vw, 96px);
+            font-weight: 900;
+            background: linear-gradient(135deg, #FFD700, #FFA500, #FF6347, #FFD700);
+            background-size: 300% 300%;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: celebGradient 3s ease infinite, celebPulse 2s ease-in-out infinite;
+            text-shadow: none;
+            filter: drop-shadow(0 0 30px rgba(255, 215, 0, 0.4));
+            margin-bottom: 20px;
+            letter-spacing: 4px;
+        }
+
+        @keyframes celebGradient {
+
+            0%,
+            100% {
+                background-position: 0% 50%;
+            }
+
+            50% {
+                background-position: 100% 50%;
+            }
+        }
+
+        @keyframes celebPulse {
+
+            0%,
+            100% {
+                transform: scale(1);
+            }
+
+            50% {
+                transform: scale(1.03);
+            }
+        }
+
+        .celebration-subtitle {
+            font-size: clamp(20px, 3vw, 36px);
+            color: #e0c068;
+            margin-bottom: 50px;
+            font-weight: 300;
+            letter-spacing: 8px;
+            opacity: 0;
+            animation: celebSlideUp 0.8s ease 0.3s forwards;
+        }
+
+        .celebration-info {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 30px;
+        }
+
+        .celebration-card {
+            background: linear-gradient(135deg, rgba(255, 215, 0, 0.1), rgba(255, 99, 71, 0.05));
+            border: 1px solid rgba(255, 215, 0, 0.2);
+            border-radius: 20px;
+            padding: 30px 60px;
+            backdrop-filter: blur(10px);
+            opacity: 0;
+            transform: translateY(40px);
+        }
+
+        .celebration-card:nth-child(1) {
+            animation: celebSlideUp 0.8s ease 0.5s forwards;
+        }
+
+        .celebration-card:nth-child(2) {
+            animation: celebSlideUp 0.8s ease 0.7s forwards;
+        }
+
+        .celebration-card:nth-child(3) {
+            animation: celebSlideUp 0.8s ease 0.9s forwards;
+        }
+
+        @keyframes celebSlideUp {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .celebration-card .card-label {
+            font-size: clamp(14px, 2vw, 20px);
+            color: rgba(255, 215, 0, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            margin-bottom: 8px;
+        }
+
+        .celebration-card .card-value {
+            font-size: clamp(28px, 5vw, 56px);
+            font-weight: 800;
+            color: #fff;
+        }
+
+        .celebration-card.amount-card .card-value {
+            font-size: clamp(40px, 7vw, 80px);
+            background: linear-gradient(135deg, #FFD700, #FFC107, #FF9800);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            filter: drop-shadow(0 0 20px rgba(255, 215, 0, 0.3));
+        }
+
+        .celebration-card.salesperson-card .card-value {
+            font-size: clamp(32px, 5vw, 64px);
+            color: #FFD700;
+        }
+
+        .celebration-card.time-card .card-value {
+            font-size: clamp(18px, 2.5vw, 28px);
+            color: rgba(255, 255, 255, 0.7);
+            font-weight: 400;
+        }
+
+        /* Firework bursts */
+        .firework {
+            position: absolute;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            animation: fireworkBurst 1.5s ease-out forwards;
+        }
+
+        @keyframes fireworkBurst {
+            0% {
+                transform: scale(0);
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 1;
+            }
+
+            100% {
+                transform: scale(1);
+                opacity: 0;
+            }
+        }
+
+        /* Golden sparkle particles */
+        .sparkle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background: #FFD700;
+            border-radius: 50%;
+            pointer-events: none;
+            animation: sparkleFloat 2s ease-out forwards;
+        }
+
+        @keyframes sparkleFloat {
+            0% {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+
+            100% {
+                opacity: 0;
+                transform: translateY(-80px) scale(0);
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div id="loading-screen">
+        <div class="loader"></div>
+        <div class="loader-text">正在加载配置...</div>
+    </div>
+
+    <div id="empty-state">
+        <div class="icon">📺</div>
+        <h2>尚未配置网页</h2>
+        <p>请前往管理页面添加需要展示的网页链接</p>
+        <a href="/admin">前往管理页面</a>
+    </div>
+
+    <div id="display-container">
+        <!-- Dynamic iframes will be injected here -->
+    </div>
+
+    <div id="hover-trigger-top"></div>
+    <div id="hover-trigger-bottom"></div>
+
+    <div id="status-bar">
+        <div class="info">
+            <span><span class="label">页面</span> <span id="current-index">0</span>/<span id="total-pages">0</span></span>
+            <span id="current-url-display"
+                style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+        </div>
+        <div class="progress-container">
+            <div id="progress-bar">
+                <div id="progress-fill"></div>
+            </div>
+        </div>
+        <div class="controls">
+            <button id="btn-prev" title="上一页">◀</button>
+            <button id="btn-pause" title="暂停/继续">⏸</button>
+            <button id="btn-next" title="下一页">▶</button>
+            <button id="btn-admin" title="管理页面">⚙️</button>
+        </div>
+    </div>
+
+    <div id="page-indicators"></div>
+
+    <audio id="music-player" preload="auto" style="display:none;"></audio>
+
+    <!-- Celebration Overlay -->
+    <div id="celebration-overlay">
+        <div id="celebration-bg"></div>
+        <canvas id="confetti-canvas"></canvas>
+        <div class="celebration-content">
+            <div class="celebration-title" id="celeb-title">🎉 恭喜新成交！🎉</div>
+            <div class="celebration-subtitle">CONGRATULATIONS</div>
+            <div class="celebration-info">
+                <div class="celebration-card salesperson-card">
+                    <div class="card-label">🏆 销售员</div>
+                    <div class="card-value" id="celeb-salesperson">—</div>
+                </div>
+                <div class="celebration-card amount-card">
+                    <div class="card-label">💰 当日成交金额已达</div>
+                    <div class="card-value" id="celeb-amount">—</div>
+                </div>
+                <div class="celebration-card time-card">
+                    <div class="card-label">🕐 成交日期</div>
+                    <div class="card-value" id="celeb-time">—</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            'use strict';
+
+            // State
+            let config = { urls: [], interval: 10, fullscreen_selectors: [] };
+            let currentIndex = 0;
+            let isPaused = false;
+            let timer = null;
+            let progressTimer = null;
+            let progressStartTime = 0;
+            let configPollTimer = null;
+            let lastConfigVersion = -1;
+            let showStatusBar = false;
+            let statusBarTimeout = null;
+            let activeIframes = []; // List of loaded iframe objects: { url, iframe }
+
+            // DOM elements
+            const loadingScreen = document.getElementById('loading-screen');
+            const emptyState = document.getElementById('empty-state');
+            const statusBar = document.getElementById('status-bar');
+            const indicators = document.getElementById('page-indicators');
+            const progressFill = document.getElementById('progress-fill');
+            const currentIndexEl = document.getElementById('current-index');
+            const totalPagesEl = document.getElementById('total-pages');
+            const currentUrlDisplay = document.getElementById('current-url-display');
+            const btnPause = document.getElementById('btn-pause');
+
+            // Sync loaded iframes with current config URLs list, keeping existing iframe DOM elements (and their states) intact
+            function syncIframes(urls) {
+                const container = document.getElementById('display-container');
+                const newIframes = [];
+
+                // Track which existing iframes we reused
+                const reusedIndices = new Set();
+
+                urls.forEach((url) => {
+                    // Find an existing iframe for this URL that hasn't been reused yet
+                    const idx = activeIframes.findIndex((item, index) => item.url === url && !reusedIndices.has(index));
+
+                    if (idx !== -1) {
+                        newIframes.push(activeIframes[idx]);
+                        reusedIndices.add(idx);
+                    } else {
+                        // Create a new iframe
+                        const iframe = document.createElement('iframe');
+                        iframe.className = 'display-iframe';
+                        iframe.sandbox = "allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-presentation";
+                        iframe.src = url;
+                        iframe.onload = () => {
+                            try {
+                                const win = iframe.contentWindow;
+                                if (win) {
+                                    overrideIframeFullscreen(win);
+                                    if (iframe.fullscreenInterval) {
+                                        clearInterval(iframe.fullscreenInterval);
+                                    }
+                                    triggerIframeFullscreen(iframe);
+                                }
+                            } catch (e) {
+                                // Ignore cross-origin error
+                            }
+                        };
+                        container.appendChild(iframe);
+                        newIframes.push({ url, iframe });
+                    }
+                });
+
+                // Remove unused old iframes
+                activeIframes.forEach((item, index) => {
+                    if (!reusedIndices.has(index)) {
+                        item.iframe.remove();
+                    }
+                });
+
+                activeIframes = newIframes;
+            }
+
+            // Fetch config
+            async function fetchConfig() {
+                try {
+                    const resp = await fetch('/api/config');
+                    const newConfig = await resp.json();
+                    if (typeof newConfig.version === 'number') {
+                        lastConfigVersion = newConfig.version;
+                    }
+                    const urlsChanged = JSON.stringify(newConfig.urls) !== JSON.stringify(config.urls);
+                    const intervalChanged = newConfig.interval !== config.interval;
+                    config = newConfig;
+
+                    if (urlsChanged) {
+                        syncIframes(newConfig.urls);
+                        if (currentIndex >= config.urls.length) {
+                            currentIndex = 0;
+                        }
+                        buildIndicators();
+                        if (config.urls.length === 0) {
+                            emptyState.classList.add('visible');
+                            stopTimer();
+                        } else {
+                            emptyState.classList.remove('visible');
+                            showPage(currentIndex);
+                        }
+                    }
+
+                    if (intervalChanged && !isPaused && config.urls.length > 0) {
+                        restartTimer();
+                    }
+
+                    return newConfig;
+                } catch (e) {
+                    console.error('Failed to fetch config:', e);
+                    return null;
+                }
+            }
+
+            // Build page indicators
+            function buildIndicators() {
+                indicators.innerHTML = '';
+                config.urls.forEach((_, i) => {
+                    const dot = document.createElement('div');
+                    dot.className = 'indicator' + (i === currentIndex ? ' active' : '');
+                    dot.addEventListener('click', () => {
+                        goToPage(i);
+                    });
+                    indicators.appendChild(dot);
+                });
+                totalPagesEl.textContent = config.urls.length;
+            }
+
+            // Override the fullscreen APIs of the iframe content window so that they execute "page-level fullscreen" inside the iframe instead of browser-level fullscreen
+            function overrideIframeFullscreen(iframeWin) {
+                try {
+                    if (!iframeWin) return;
+                    const doc = iframeWin.document;
+                    const elProto = iframeWin.Element.prototype;
+
+                    let activeFullscreenElement = null;
+
+                    // Mock properties
+                    Object.defineProperty(doc, 'fullscreenElement', {
+                        get: () => activeFullscreenElement,
+                        configurable: true
+                    });
+                    Object.defineProperty(doc, 'webkitFullscreenElement', {
+                        get: () => activeFullscreenElement,
+                        configurable: true
+                    });
+                    Object.defineProperty(doc, 'fullscreenEnabled', {
+                        get: () => true,
+                        configurable: true
+                    });
+                    Object.defineProperty(doc, 'webkitFullscreenEnabled', {
+                        get: () => true,
+                        configurable: true
+                    });
+
+                    // Helper to make element fill the iframe viewport using CSS
+                    function enterFakeFullscreen(el) {
+                        if (activeFullscreenElement) {
+                            exitFakeFullscreen();
+                        }
+                        activeFullscreenElement = el;
+
+                        // Check if our style tag exists in the iframe
+                        let style = doc.getElementById('fake-fullscreen-style');
+                        if (!style) {
+                            style = doc.createElement('style');
+                            style.id = 'fake-fullscreen-style';
+                            style.innerHTML = `
+                                .fake-fullscreen-active {
+                                    position: fixed !important;
+                                    top: 0 !important;
+                                    left: 0 !important;
+                                    width: 100vw !important;
+                                    height: 100vh !important;
+                                    z-index: 99999999 !important;
+                                    margin: 0 !important;
+                                    padding: 0 !important;
+                                    box-sizing: border-box !important;
+                                }
+                            `;
+                            doc.head.appendChild(style);
+                        }
+
+                        el.classList.add('fake-fullscreen-active');
+
+                        // Dispatch event
+                        const event = new Event('fullscreenchange', { bubbles: true, cancelable: true });
+                        const webkitEvent = new Event('webkitfullscreenchange', { bubbles: true, cancelable: true });
+                        el.dispatchEvent(event);
+                        doc.dispatchEvent(event);
+                        el.dispatchEvent(webkitEvent);
+                        doc.dispatchEvent(webkitEvent);
+                    }
+
+                    function exitFakeFullscreen() {
+                        if (!activeFullscreenElement) return;
+                        const el = activeFullscreenElement;
+                        el.classList.remove('fake-fullscreen-active');
+                        activeFullscreenElement = null;
+
+                        // Dispatch event
+                        const event = new Event('fullscreenchange', { bubbles: true, cancelable: true });
+                        const webkitEvent = new Event('webkitfullscreenchange', { bubbles: true, cancelable: true });
+                        el.dispatchEvent(event);
+                        doc.dispatchEvent(event);
+                        el.dispatchEvent(webkitEvent);
+                        doc.dispatchEvent(webkitEvent);
+                    }
+
+                    // Override methods
+                    elProto.requestFullscreen = function () {
+                        enterFakeFullscreen(this);
+                        return Promise.resolve();
+                    };
+                    elProto.webkitRequestFullscreen = function () {
+                        enterFakeFullscreen(this);
+                        return Promise.resolve();
+                    };
+
+                    doc.exitFullscreen = function () {
+                        try {
+                            if (iframeWin.frameElement && !iframeWin.frameElement.classList.contains('active')) {
+                                console.log('[Auto-Fullscreen] Ignoring exitFullscreen request while iframe is inactive.');
+                                return Promise.resolve();
+                            }
+                        } catch (err) {
+                            // ignore cross-origin error when accessing frameElement
+                        }
+                        exitFakeFullscreen();
+                        return Promise.resolve();
+                    };
+                    doc.webkitExitFullscreen = function () {
+                        try {
+                            if (iframeWin.frameElement && !iframeWin.frameElement.classList.contains('active')) {
+                                console.log('[Auto-Fullscreen] Ignoring webkitExitFullscreen request while iframe is inactive.');
+                                return Promise.resolve();
+                            }
+                        } catch (err) {
+                            // ignore cross-origin error when accessing frameElement
+                        }
+                        exitFakeFullscreen();
+                        return Promise.resolve();
+                    };
+
+                } catch (e) {
+                    console.log('Cannot override fullscreen inside iframe (cross-origin or blocked):', e.message);
+                }
+            }
+
+            // Find and click the fullscreen button inside the iframe
+            function triggerIframeFullscreen(iframe) {
+                try {
+                    const win = iframe.contentWindow;
+                    if (!win) return;
+                    const doc = win.document;
+                    if (!doc) return;
+
+                    const selectors = config.fullscreen_selectors || [];
+                    if (selectors.length === 0) return;
+
+                    function findAndClickButton() {
+                        try {
+                            // 1. Try treating each selector as a CSS selector
+                            for (const sel of selectors) {
+                                if (!sel || !sel.trim()) continue;
+                                try {
+                                    const el = doc.querySelector(sel.trim());
+                                    if (el && typeof el.click === 'function') {
+                                        console.log(`[Auto-Fullscreen] Clicked element via CSS selector: ${sel}`);
+                                        el.click();
+                                        return true;
+                                    }
+                                } catch (e) {
+                                    // Not a valid CSS selector
+                                }
+                            }
+
+                            // 2. Try text matching on common elements
+                            const candidates = doc.querySelectorAll('button, [role="button"], a, div, span, p');
+                            for (const el of candidates) {
+                                const text = (el.textContent || '').trim();
+                                if (!text) continue;
+
+                                for (const keyword of selectors) {
+                                    if (!keyword || !keyword.trim()) continue;
+                                    if (text.toLowerCase().includes(keyword.trim().toLowerCase())) {
+                                        if (typeof el.click === 'function') {
+                                            console.log(`[Auto-Fullscreen] Clicked element containing text: "${text}" matching keyword: "${keyword}"`);
+                                            el.click();
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            console.error('[Auto-Fullscreen] Error searching inside iframe:', e);
+                        }
+                        return false;
+                    }
+
+                    if (!findAndClickButton()) {
+                        let attempts = 0;
+                        const maxAttempts = 15; // 7.5 seconds
+                        const interval = setInterval(() => {
+                            attempts++;
+                            if (findAndClickButton() || attempts >= maxAttempts) {
+                                clearInterval(interval);
+                            }
+                        }, 500);
+                        iframe.fullscreenInterval = interval;
+                    }
+                } catch (e) {
+                    console.log('[Auto-Fullscreen] Cannot access iframe DOM (possibly cross-origin):', e.message);
+                }
+            }
+
+            // Show a specific page by making its iframe active
+            function showPage(index) {
+                if (config.urls.length === 0 || activeIframes.length === 0) return;
+
+                currentIndex = index;
+                if (currentIndex >= activeIframes.length) {
+                    currentIndex = 0;
+                }
+                const activeItem = activeIframes[currentIndex];
+
+                // Update active/inactive classes
+                activeIframes.forEach((item, i) => {
+                    if (i === currentIndex) {
+                        item.iframe.classList.add('active');
+                        if (item.iframe.fullscreenInterval) {
+                            clearInterval(item.iframe.fullscreenInterval);
+                        }
+                        triggerIframeFullscreen(item.iframe);
+                    } else {
+                        item.iframe.classList.remove('active');
+                    }
+                });
+
+                // Update UI
+                currentIndexEl.textContent = currentIndex + 1;
+                currentUrlDisplay.textContent = activeItem ? activeItem.url : '';
+                updateIndicators();
+            }
+
+            // Update indicator dots
+            function updateIndicators() {
+                const dots = indicators.querySelectorAll('.indicator');
+                dots.forEach((dot, i) => {
+                    dot.classList.toggle('active', i === currentIndex);
+                });
+            }
+
+            // Go to specific page
+            function goToPage(index) {
+                showPage(index);
+                restartTimer();
+                resetProgress();
+            }
+
+            // Timer management
+            function startTimer() {
+                stopTimer();
+                if (config.urls.length <= 1) return;
+
+                progressStartTime = Date.now();
+                const intervalMs = config.interval * 1000;
+
+                timer = setTimeout(() => {
+                    nextPage();
+                }, intervalMs);
+
+                // Progress bar animation
+                progressTimer = setInterval(() => {
+                    const elapsed = Date.now() - progressStartTime;
+                    const percent = Math.min((elapsed / intervalMs) * 100, 100);
+                    progressFill.style.width = percent + '%';
+                }, 50);
+            }
+
+            function stopTimer() {
+                if (timer) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+                if (progressTimer) {
+                    clearInterval(progressTimer);
+                    progressTimer = null;
+                }
+            }
+
+            function restartTimer() {
+                if (!isPaused) {
+                    startTimer();
+                }
+            }
+
+            function resetProgress() {
+                progressFill.style.width = '0%';
+            }
+
+            function nextPage() {
+                const nextIdx = (currentIndex + 1) % config.urls.length;
+                showPage(nextIdx);
+                resetProgress();
+                startTimer();
+            }
+
+            function prevPage() {
+                const prevIdx = (currentIndex - 1 + config.urls.length) % config.urls.length;
+                showPage(prevIdx);
+                resetProgress();
+                startTimer();
+            }
+
+            function togglePause() {
+                isPaused = !isPaused;
+                btnPause.textContent = isPaused ? '▶️' : '⏸';
+                btnPause.classList.toggle('active', isPaused);
+
+                if (isPaused) {
+                    stopTimer();
+                } else {
+                    startTimer();
+                }
+            }
+
+            // Status bar show/hide
+            function showStatusBarFn() {
+                statusBar.classList.add('visible');
+                indicators.classList.add('visible');
+                clearTimeout(statusBarTimeout);
+                statusBarTimeout = setTimeout(() => {
+                    if (!showStatusBar) {
+                        statusBar.classList.remove('visible');
+                        indicators.classList.remove('visible');
+                    }
+                }, 3000);
+            }
+
+            // Event listeners
+            document.getElementById('hover-trigger-top').addEventListener('mouseenter', showStatusBarFn);
+            document.getElementById('hover-trigger-bottom').addEventListener('mouseenter', () => {
+                indicators.classList.add('visible');
+                clearTimeout(statusBarTimeout);
+                statusBarTimeout = setTimeout(() => {
+                    indicators.classList.remove('visible');
+                }, 3000);
+            });
+
+            document.getElementById('btn-prev').addEventListener('click', () => {
+                prevPage();
+                showStatusBarFn();
+            });
+
+            document.getElementById('btn-next').addEventListener('click', () => {
+                nextPage();
+                showStatusBarFn();
+            });
+
+            btnPause.addEventListener('click', () => {
+                togglePause();
+                showStatusBarFn();
+            });
+
+            document.getElementById('btn-admin').addEventListener('click', () => {
+                window.open('/admin', '_blank');
+            });
+
+            // Keyboard shortcuts
+            document.addEventListener('keydown', (e) => {
+                switch (e.key) {
+                    case 'ArrowLeft':
+                        prevPage();
+                        showStatusBarFn();
+                        break;
+                    case 'ArrowRight':
+                        nextPage();
+                        showStatusBarFn();
+                        break;
+                    case ' ':
+                        e.preventDefault();
+                        togglePause();
+                        showStatusBarFn();
+                        break;
+                    case 'Escape':
+                        showStatusBarFn();
+                        break;
+                }
+            });
+
+            // Poll the lightweight version endpoint; only reload full config on change.
+            async function pollConfigVersion() {
+                try {
+                    const resp = await fetch('/api/config_version');
+                    const data = await resp.json();
+                    if (typeof data.version === 'number' && data.version !== lastConfigVersion) {
+                        await fetchConfig();
+                    }
+                } catch (e) {
+                    // ignore polling errors
+                }
+            }
+
+            function startConfigPolling() {
+                configPollTimer = setInterval(pollConfigVersion, 2000);
+            }
+
+            // Initialize
+            async function init() {
+                await fetchConfig();
+                loadingScreen.classList.add('hidden');
+
+                if (config.urls.length === 0) {
+                    emptyState.classList.add('visible');
+                } else {
+                    buildIndicators();
+                    showPage(0);
+                    startTimer();
+                }
+
+                startConfigPolling();
+
+                // Brief status bar flash on load
+                setTimeout(showStatusBarFn, 500);
+            }
+
+            // --- Celebration system ---
+            const celebOverlay = document.getElementById('celebration-overlay');
+            const confettiCanvas = document.getElementById('confetti-canvas');
+            const confettiCtx = confettiCanvas.getContext('2d');
+            let confettiParticles = [];
+            let confettiRunning = false;
+            let confettiAnimId = null;
+            let fireworkTimers = [];
+            let celebAutoStopTimer = null;
+
+            function resizeConfettiCanvas() {
+                confettiCanvas.width = window.innerWidth;
+                confettiCanvas.height = window.innerHeight;
+            }
+
+            window.addEventListener('resize', resizeConfettiCanvas);
+
+            function createConfettiParticles() {
+                const colors = ['#FFD700', '#FFA500', '#FF6347', '#FF4500', '#FF1493',
+                    '#FFE066', '#FF8C00', '#DC143C', '#FF69B4', '#FFDAB9'];
+                confettiParticles = [];
+                const count = Math.min(300, Math.floor(window.innerWidth / 4));
+                for (let i = 0; i < count; i++) {
+                    confettiParticles.push({
+                        x: Math.random() * confettiCanvas.width,
+                        y: Math.random() * confettiCanvas.height - confettiCanvas.height,
+                        w: Math.random() * 12 + 4,
+                        h: Math.random() * 8 + 3,
+                        color: colors[Math.floor(Math.random() * colors.length)],
+                        speed: Math.random() * 3 + 1.5,
+                        angle: Math.random() * Math.PI * 2,
+                        rotSpeed: (Math.random() - 0.5) * 0.15,
+                        swingFactor: Math.random() * 2.5,
+                        swingSpeed: Math.random() * 0.025 + 0.008,
+                        opacity: Math.random() * 0.5 + 0.5,
+                    });
+                }
+            }
+
+            function animateConfetti() {
+                if (!confettiRunning) return;
+                confettiCtx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
+
+                for (const p of confettiParticles) {
+                    p.y += p.speed;
+                    p.x += Math.sin(p.y * p.swingSpeed) * p.swingFactor;
+                    p.angle += p.rotSpeed;
+
+                    confettiCtx.save();
+                    confettiCtx.globalAlpha = p.opacity;
+                    confettiCtx.translate(p.x, p.y);
+                    confettiCtx.rotate(p.angle);
+                    confettiCtx.fillStyle = p.color;
+                    confettiCtx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+                    confettiCtx.restore();
+
+                    // Reset when off screen
+                    if (p.y > confettiCanvas.height + 30) {
+                        p.y = -20;
+                        p.x = Math.random() * confettiCanvas.width;
+                    }
+                }
+                confettiAnimId = requestAnimationFrame(animateConfetti);
+            }
+
+            function createFireworkBurst(x, y) {
+                const colors = ['#FFD700', '#FF6347', '#FF4500', '#FFA500', '#FFE066', '#FF1493'];
+                const sparkCount = 30;
+                for (let i = 0; i < sparkCount; i++) {
+                    const angle = (Math.PI * 2 / sparkCount) * i;
+                    const dist = 80 + Math.random() * 120;
+                    const spark = document.createElement('div');
+                    spark.className = 'firework';
+                    spark.style.left = x + 'px';
+                    spark.style.top = y + 'px';
+                    spark.style.background = colors[Math.floor(Math.random() * colors.length)];
+                    spark.style.boxShadow = `0 0 6px ${spark.style.background}`;
+                    spark.style.setProperty('--tx', Math.cos(angle) * dist + 'px');
+                    spark.style.setProperty('--ty', Math.sin(angle) * dist + 'px');
+                    spark.style.animation = 'none';
+                    celebOverlay.appendChild(spark);
+
+                    // Animate with JS for radial burst
+                    const startTime = performance.now();
+                    const duration = 1200 + Math.random() * 600;
+                    function animSpark(now) {
+                        const elapsed = now - startTime;
+                        const progress = Math.min(elapsed / duration, 1);
+                        const ease = 1 - Math.pow(1 - progress, 3);
+                        const dx = Math.cos(angle) * dist * ease;
+                        const dy = Math.sin(angle) * dist * ease - (progress * 40);
+                        spark.style.transform = `translate(${dx}px, ${dy}px) scale(${1 - progress})`;
+                        spark.style.opacity = 1 - progress;
+                        if (progress < 1) {
+                            requestAnimationFrame(animSpark);
+                        } else {
+                            spark.remove();
+                        }
+                    }
+                    requestAnimationFrame(animSpark);
+                }
+            }
+
+            function startFireworks() {
+                function burst() {
+                    if (!confettiRunning) return;
+                    const x = Math.random() * window.innerWidth * 0.8 + window.innerWidth * 0.1;
+                    const y = Math.random() * window.innerHeight * 0.5 + window.innerHeight * 0.1;
+                    createFireworkBurst(x, y);
+                    const nextDelay = 800 + Math.random() * 1500;
+                    fireworkTimers.push(setTimeout(burst, nextDelay));
+                }
+                burst();
+            }
+
+            function formatAmount(amountStr) {
+                if (!amountStr) return '—';
+                const num = parseFloat(amountStr.replace(/[^0-9.]/g, ''));
+                if (isNaN(num)) return amountStr;
+                return '¥' + num.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+            }
+
+            function animateAmountCounter(element, targetStr) {
+                const num = parseFloat(targetStr.replace(/[^0-9.]/g, ''));
+                if (isNaN(num)) {
+                    element.textContent = targetStr;
+                    return;
+                }
+                const duration = 2000;
+                const startTime = performance.now();
+                function update(now) {
+                    const elapsed = now - startTime;
+                    const progress = Math.min(elapsed / duration, 1);
+                    // Ease out cubic
+                    const ease = 1 - Math.pow(1 - progress, 3);
+                    const current = num * ease;
+                    element.textContent = '¥' + current.toLocaleString('zh-CN', {
+                        minimumFractionDigits: 0,
+                        maximumFractionDigits: 0
+                    });
+                    if (progress < 1) {
+                        requestAnimationFrame(update);
+                    } else {
+                        element.textContent = formatAmount(targetStr);
+                    }
+                }
+                requestAnimationFrame(update);
+            }
+
+            function showCelebration(celebration) {
+                // Populate data
+                document.getElementById('celeb-salesperson').textContent = celebration.salesperson || '—';
+                document.getElementById('celeb-time').textContent = celebration.deal_time || '—';
+
+                // Reset animations by re-creating inner content classes
+                const cards = celebOverlay.querySelectorAll('.celebration-card');
+                cards.forEach(c => {
+                    c.style.animation = 'none';
+                    c.offsetHeight; // force reflow
+                    c.style.animation = '';
+                });
+                const subtitle = celebOverlay.querySelector('.celebration-subtitle');
+                if (subtitle) {
+                    subtitle.style.animation = 'none';
+                    subtitle.offsetHeight;
+                    subtitle.style.animation = '';
+                }
+
+                // Show overlay
+                celebOverlay.classList.add('active');
+                requestAnimationFrame(() => {
+                    celebOverlay.classList.add('visible');
+                });
+
+                // Start confetti
+                resizeConfettiCanvas();
+                createConfettiParticles();
+                confettiRunning = true;
+                animateConfetti();
+
+                // Start fireworks
+                startFireworks();
+
+                // Animate amount counter with delay
+                setTimeout(() => {
+                    animateAmountCounter(
+                        document.getElementById('celeb-amount'),
+                        celebration.amount || '0'
+                    );
+                }, 700);
+
+                // Auto-stop after 60 seconds
+                if (celebAutoStopTimer) clearTimeout(celebAutoStopTimer);
+                celebAutoStopTimer = setTimeout(() => {
+                    // Send stop to server so all clients sync
+                    fetch('/api/remote/music', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'stop' })
+                    }).catch(() => { });
+                }, 60000);
+            }
+
+            function hideCelebration() {
+                // Clear auto-stop timer
+                if (celebAutoStopTimer) {
+                    clearTimeout(celebAutoStopTimer);
+                    celebAutoStopTimer = null;
+                }
+                celebOverlay.classList.remove('visible');
+                confettiRunning = false;
+
+                // Clear firework timers
+                fireworkTimers.forEach(t => clearTimeout(t));
+                fireworkTimers = [];
+
+                // Remove leftover firework elements
+                celebOverlay.querySelectorAll('.firework').forEach(el => el.remove());
+
+                setTimeout(() => {
+                    celebOverlay.classList.remove('active');
+                    if (confettiAnimId) {
+                        cancelAnimationFrame(confettiAnimId);
+                        confettiAnimId = null;
+                    }
+                    confettiCtx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
+                }, 600);
+            }
+
+            // --- Music state polling (persistent state + version) ---
+            const musicPlayer = document.getElementById('music-player');
+            let musicPollTimer = null;
+            let lastMusicVersion = -1;
+
+            async function pollMusicCommand() {
+                try {
+                    const resp = await fetch('/api/music_command');
+                    const data = await resp.json();
+                    // Only act when the version changes
+                    if (data.version !== lastMusicVersion) {
+                        lastMusicVersion = data.version;
+                        if (data.state === 'playing' && data.music_url) {
+                            musicPlayer.src = data.music_url;
+                            musicPlayer.load();
+                            musicPlayer.play().catch(e => console.warn('Music autoplay blocked:', e));
+                            // Show celebration overlay if celebration data exists
+                            if (data.celebration && (data.celebration.salesperson || data.celebration.amount)) {
+                                showCelebration(data.celebration);
+                            } else {
+                                // Fallback: switch to first page
+                                if (config.urls.length > 0) {
+                                    goToPage(0);
+                                }
+                            }
+                        } else if (data.state === 'stopped') {
+                            musicPlayer.pause();
+                            musicPlayer.currentTime = 0;
+                            musicPlayer.removeAttribute('src');
+                            musicPlayer.load();
+                            hideCelebration();
+                        }
+                    }
+                } catch (e) {
+                    // ignore polling errors
+                }
+            }
+
+            function startMusicPolling() {
+                musicPollTimer = setInterval(pollMusicCommand, 2000);
+            }
+
+            init();
+            startMusicPolling();
+        })();
+    </script>
+</body>
+
+</html>

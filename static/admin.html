@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="TV Web Server 管理面板 - 配置网页轮播列表">
+    <title>TV Web Server - 管理面板</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: #0a0a1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+
+        /* Background gradient animation */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background:
+                radial-gradient(ellipse at 20% 50%, rgba(0, 100, 200, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(0, 212, 255, 0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 80%, rgba(100, 0, 200, 0.05) 0%, transparent 50%);
+            z-index: -1;
+        }
+
+        /* Header */
+        .header {
+            background: rgba(15, 15, 35, 0.8);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            padding: 16px 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-inner {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            background: linear-gradient(135deg, #00d4ff, #0099ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .header h1 .icon {
+            font-size: 24px;
+            -webkit-text-fill-color: initial;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .header-actions a {
+            color: #8899aa;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+
+        .header-actions a:hover {
+            color: #00d4ff;
+            background: rgba(0, 212, 255, 0.08);
+            border-color: rgba(0, 212, 255, 0.2);
+        }
+
+        /* Main content */
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 30px 24px;
+        }
+
+        /* Cards */
+        .card {
+            background: rgba(20, 20, 45, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 24px;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            transition: border-color 0.3s;
+        }
+
+        .card:hover {
+            border-color: rgba(0, 212, 255, 0.15);
+        }
+
+        .card-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #00d4ff;
+            margin-bottom: 16px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* URL List */
+        #url-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .url-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: rgba(15, 15, 35, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 10px;
+            padding: 10px 14px;
+            transition: all 0.2s;
+            cursor: grab;
+        }
+
+        .url-item:hover {
+            border-color: rgba(0, 212, 255, 0.2);
+            background: rgba(15, 15, 35, 0.8);
+        }
+
+        .url-item.dragging {
+            opacity: 0.5;
+            border-color: #00d4ff;
+        }
+
+        .url-item .drag-handle {
+            color: #445;
+            cursor: grab;
+            font-size: 16px;
+            user-select: none;
+            flex-shrink: 0;
+        }
+
+        .url-item .index {
+            color: #556;
+            font-size: 12px;
+            font-weight: 600;
+            min-width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 212, 255, 0.1);
+            border-radius: 6px;
+            flex-shrink: 0;
+        }
+
+        .url-item input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #e0e0e0;
+            font-family: 'Inter', monospace;
+            font-size: 13px;
+            outline: none;
+            padding: 4px 0;
+        }
+
+        .url-item input:focus {
+            color: #00d4ff;
+        }
+
+        .url-item .actions {
+            display: flex;
+            gap: 4px;
+            opacity: 0;
+            transition: opacity 0.2s;
+            flex-shrink: 0;
+        }
+
+        .url-item:hover .actions {
+            opacity: 1;
+        }
+
+        .url-item .actions button {
+            background: transparent;
+            border: none;
+            color: #556;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .url-item .actions button:hover {
+            background: rgba(255, 255, 255, 0.06);
+            color: #e0e0e0;
+        }
+
+        .url-item .actions button.delete:hover {
+            color: #ff6b6b;
+            background: rgba(255, 107, 107, 0.1);
+        }
+
+        /* Add URL area */
+        .add-url-container {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        .add-url-container input {
+            flex: 1;
+            background: rgba(15, 15, 35, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #e0e0e0;
+            padding: 12px 16px;
+            border-radius: 10px;
+            font-family: 'Inter', monospace;
+            font-size: 13px;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        .add-url-container input:focus {
+            border-color: rgba(0, 212, 255, 0.4);
+            box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.08);
+        }
+
+        .add-url-container input::placeholder {
+            color: #445;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 10px;
+            font-family: 'Inter', sans-serif;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #0077cc, #0099ff);
+            color: white;
+            box-shadow: 0 4px 15px rgba(0, 119, 204, 0.3);
+        }
+
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #0088dd, #00aaff);
+            box-shadow: 0 4px 20px rgba(0, 119, 204, 0.4);
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.06);
+            color: #8899aa;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: #e0e0e0;
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #00aa66, #00cc77);
+            color: white;
+            box-shadow: 0 4px 15px rgba(0, 170, 102, 0.3);
+        }
+
+        .btn-success:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px rgba(0, 170, 102, 0.4);
+        }
+
+        /* Settings grid */
+        .settings-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .setting-item {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .setting-item label {
+            font-size: 13px;
+            color: #8899aa;
+            font-weight: 500;
+        }
+
+        .setting-item input,
+        .setting-item select {
+            background: rgba(15, 15, 35, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #e0e0e0;
+            padding: 10px 14px;
+            border-radius: 10px;
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        .setting-item input:focus {
+            border-color: rgba(0, 212, 255, 0.4);
+            box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.08);
+        }
+
+        /* Save bar */
+        .save-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 16px 24px;
+            background: rgba(10, 10, 26, 0.95);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            transform: translateY(100%);
+            transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: 200;
+        }
+
+        .save-bar.visible {
+            transform: translateY(0);
+        }
+
+        .save-bar .change-count {
+            color: #ffaa00;
+            font-size: 13px;
+        }
+
+        /* Toast notification */
+        .toast {
+            position: fixed;
+            top: 80px;
+            right: 24px;
+            padding: 14px 22px;
+            border-radius: 12px;
+            font-size: 14px;
+            z-index: 1000;
+            transform: translateX(120%);
+            transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        .toast.visible {
+            transform: translateX(0);
+        }
+
+        .toast.success {
+            background: rgba(0, 170, 102, 0.15);
+            border: 1px solid rgba(0, 170, 102, 0.3);
+            color: #00cc77;
+        }
+
+        .toast.error {
+            background: rgba(255, 107, 107, 0.15);
+            border: 1px solid rgba(255, 107, 107, 0.3);
+            color: #ff6b6b;
+        }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .settings-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .header-inner {
+                flex-direction: column;
+                gap: 10px;
+            }
+        }
+
+        /* Empty list */
+        .empty-list {
+            text-align: center;
+            padding: 40px 20px;
+            color: #445;
+        }
+
+        .empty-list .icon {
+            font-size: 40px;
+            margin-bottom: 12px;
+        }
+
+        .empty-list p {
+            font-size: 14px;
+            margin-bottom: 4px;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-inner">
+            <h1><span class="icon">📺</span> TV Web Server 管理面板</h1>
+            <div class="header-actions">
+                <a href="/" target="_blank">🖥️ 打开展示页</a>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- URL List Card -->
+        <div class="card">
+            <div class="card-title">🔗 网页链接列表</div>
+            <ul id="url-list">
+                <!-- Dynamic content -->
+            </ul>
+            <div id="empty-list-msg" class="empty-list" style="display:none;">
+                <div class="icon">📋</div>
+                <p>暂无网页链接</p>
+                <p style="color: #334;">在下方添加需要轮播展示的网页</p>
+            </div>
+            <div class="add-url-container">
+                <input type="text" id="new-url-input" placeholder="输入网页链接 (例: https://example.com)" spellcheck="false">
+                <button class="btn btn-primary" id="btn-add-url">➕ 添加</button>
+            </div>
+        </div>
+
+        <!-- Settings Card -->
+        <div class="card">
+            <div class="card-title">⚙️ 显示设置</div>
+            <div class="settings-grid">
+                <div class="setting-item">
+                    <label for="interval-input">自动切换间隔 (秒)</label>
+                    <input type="number" id="interval-input" min="1" max="3600" value="10">
+                </div>
+                <div class="setting-item">
+                    <label for="fullscreen-keywords">全屏按钮关键词 (逗号分隔)</label>
+                    <input type="text" id="fullscreen-keywords" placeholder="全屏显示,全屏,fullscreen">
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick actions -->
+        <div class="card">
+            <div class="card-title">🚀 快捷操作</div>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <button class="btn btn-success" id="btn-save">💾 保存配置</button>
+                <a href="/" target="_blank" class="btn btn-secondary">🖥️ 打开展示页面</a>
+                <button class="btn btn-secondary" id="btn-reload-config">🔄 重新加载配置</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Save bar (hidden by default) -->
+    <div class="save-bar" id="save-bar">
+        <span class="change-count" id="change-count">有未保存的更改</span>
+        <button class="btn btn-success" id="btn-save-bar">💾 保存更改</button>
+        <button class="btn btn-secondary" id="btn-discard">↩️ 放弃更改</button>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        (function() {
+            'use strict';
+
+            let originalConfig = null;
+            let hasChanges = false;
+            let dragSrcIndex = null;
+            let lastConfigVersion = -1;
+
+            const urlList = document.getElementById('url-list');
+            const emptyMsg = document.getElementById('empty-list-msg');
+            const newUrlInput = document.getElementById('new-url-input');
+            const intervalInput = document.getElementById('interval-input');
+            const fullscreenKeywords = document.getElementById('fullscreen-keywords');
+            const saveBar = document.getElementById('save-bar');
+            const toastEl = document.getElementById('toast');
+
+            // Load config
+            async function loadConfig() {
+                try {
+                    const resp = await fetch('/api/config');
+                    const config = await resp.json();
+                    originalConfig = JSON.parse(JSON.stringify(config));
+                    lastConfigVersion = (typeof config.version === 'number') ? config.version : lastConfigVersion;
+                    renderUrlList(config.urls);
+                    intervalInput.value = config.interval || 10;
+                    fullscreenKeywords.value = (config.fullscreen_selectors || []).join(',');
+                    markClean();
+                } catch (e) {
+                    showToast('加载配置失败: ' + e.message, 'error');
+                }
+            }
+
+            // Render URL list
+            function renderUrlList(urls) {
+                urlList.innerHTML = '';
+                if (urls.length === 0) {
+                    emptyMsg.style.display = 'block';
+                } else {
+                    emptyMsg.style.display = 'none';
+                }
+
+                urls.forEach((url, i) => {
+                    const li = document.createElement('li');
+                    li.className = 'url-item';
+                    li.draggable = true;
+                    li.dataset.index = i;
+
+                    li.innerHTML = `
+                        <span class="drag-handle" title="拖拽排序">⠿</span>
+                        <span class="index">${i + 1}</span>
+                        <input type="text" value="${escapeHtml(url)}" spellcheck="false" data-index="${i}">
+                        <div class="actions">
+                            <button class="move-up" title="上移">▲</button>
+                            <button class="move-down" title="下移">▼</button>
+                            <button class="delete" title="删除">✕</button>
+                        </div>
+                    `;
+
+                    // Input change
+                    li.querySelector('input').addEventListener('input', () => markDirty());
+
+                    // Move up
+                    li.querySelector('.move-up').addEventListener('click', () => {
+                        if (i > 0) {
+                            const items = getUrlsFromDOM();
+                            [items[i-1], items[i]] = [items[i], items[i-1]];
+                            renderUrlList(items);
+                            markDirty();
+                        }
+                    });
+
+                    // Move down
+                    li.querySelector('.move-down').addEventListener('click', () => {
+                        const items = getUrlsFromDOM();
+                        if (i < items.length - 1) {
+                            [items[i], items[i+1]] = [items[i+1], items[i]];
+                            renderUrlList(items);
+                            markDirty();
+                        }
+                    });
+
+                    // Delete
+                    li.querySelector('.delete').addEventListener('click', () => {
+                        li.style.transform = 'translateX(100%)';
+                        li.style.opacity = '0';
+                        li.style.transition = 'all 0.3s';
+                        setTimeout(() => {
+                            const items = getUrlsFromDOM();
+                            items.splice(i, 1);
+                            renderUrlList(items);
+                            markDirty();
+                        }, 300);
+                    });
+
+                    // Drag events
+                    li.addEventListener('dragstart', (e) => {
+                        dragSrcIndex = i;
+                        li.classList.add('dragging');
+                        e.dataTransfer.effectAllowed = 'move';
+                    });
+
+                    li.addEventListener('dragend', () => {
+                        li.classList.remove('dragging');
+                    });
+
+                    li.addEventListener('dragover', (e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = 'move';
+                    });
+
+                    li.addEventListener('drop', (e) => {
+                        e.preventDefault();
+                        if (dragSrcIndex !== null && dragSrcIndex !== i) {
+                            const items = getUrlsFromDOM();
+                            const moved = items.splice(dragSrcIndex, 1)[0];
+                            items.splice(i, 0, moved);
+                            renderUrlList(items);
+                            markDirty();
+                        }
+                        dragSrcIndex = null;
+                    });
+
+                    urlList.appendChild(li);
+                });
+            }
+
+            // Get URLs from DOM
+            function getUrlsFromDOM() {
+                return Array.from(urlList.querySelectorAll('.url-item input'))
+                    .map(input => input.value.trim())
+                    .filter(url => url.length > 0);
+            }
+
+            // Build config from current state
+            function buildConfig() {
+                const selectors = fullscreenKeywords.value
+                    .split(',')
+                    .map(s => s.trim())
+                    .filter(s => s.length > 0);
+
+                return {
+                    urls: getUrlsFromDOM(),
+                    interval: Math.max(1, parseInt(intervalInput.value) || 10),
+                    fullscreen_selectors: selectors.length > 0 ? selectors : ['全屏显示', '全屏', 'fullscreen'],
+                };
+            }
+
+            // Save config
+            async function saveConfig() {
+                const config = buildConfig();
+                try {
+                    const resp = await fetch('/api/config', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(config),
+                    });
+                    const result = await resp.json();
+                    if (result.error) {
+                        showToast('保存失败: ' + result.error, 'error');
+                    } else {
+                        originalConfig = JSON.parse(JSON.stringify(config));
+                        if (typeof result.version === 'number') {
+                            lastConfigVersion = result.version;
+                        }
+                        showToast('✅ 配置已保存，展示页面将自动更新', 'success');
+                        markClean();
+                    }
+                } catch (e) {
+                    showToast('保存失败: ' + e.message, 'error');
+                }
+            }
+
+            // Dirty state tracking
+            function markDirty() {
+                hasChanges = true;
+                saveBar.classList.add('visible');
+            }
+
+            function markClean() {
+                hasChanges = false;
+                saveBar.classList.remove('visible');
+            }
+
+            // Toast
+            function showToast(message, type = 'success') {
+                toastEl.textContent = message;
+                toastEl.className = 'toast ' + type + ' visible';
+                setTimeout(() => {
+                    toastEl.classList.remove('visible');
+                }, 3000);
+            }
+
+            // Escape HTML
+            function escapeHtml(str) {
+                const div = document.createElement('div');
+                div.textContent = str;
+                return div.innerHTML;
+            }
+
+            // Event listeners
+            document.getElementById('btn-add-url').addEventListener('click', () => {
+                const url = newUrlInput.value.trim();
+                if (url) {
+                    const items = getUrlsFromDOM();
+                    items.push(url);
+                    renderUrlList(items);
+                    newUrlInput.value = '';
+                    markDirty();
+                    newUrlInput.focus();
+                }
+            });
+
+            newUrlInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    document.getElementById('btn-add-url').click();
+                }
+            });
+
+            document.getElementById('btn-save').addEventListener('click', saveConfig);
+            document.getElementById('btn-save-bar').addEventListener('click', saveConfig);
+
+            document.getElementById('btn-discard').addEventListener('click', () => {
+                // Reload fresh config from server so we sync to the latest version
+                loadConfig().then(() => {
+                    showToast('已恢复到最新配置', 'success');
+                });
+            });
+
+            document.getElementById('btn-reload-config').addEventListener('click', loadConfig);
+
+            intervalInput.addEventListener('input', markDirty);
+            fullscreenKeywords.addEventListener('input', markDirty);
+
+            // --- Multi-client sync: poll config version ---
+            async function pollConfigVersion() {
+                try {
+                    const resp = await fetch('/api/config_version');
+                    const data = await resp.json();
+                    const v = (typeof data.version === 'number') ? data.version : null;
+                    if (v === null || v === lastConfigVersion) return;
+
+                    if (!hasChanges) {
+                        // No local edits: silently reload the updated config
+                        await loadConfig();
+                    } else {
+                        // User has unsaved edits: avoid clobbering, just notify once
+                        lastConfigVersion = v;
+                        showToast('⚠️ 配置已被其他客户端更新，保存或放弃当前更改以同步', 'error');
+                    }
+                } catch (e) {
+                    // ignore polling errors
+                }
+            }
+
+            // Warn before leaving with unsaved changes
+            window.addEventListener('beforeunload', (e) => {
+                if (hasChanges) {
+                    e.preventDefault();
+                    e.returnValue = '';
+                }
+            });
+
+            // Init
+            loadConfig();
+            // Poll for config changes from other clients every 2 seconds
+            setInterval(pollConfigVersion, 2000);
+        })();
+    </script>
+</body>
+</html>
