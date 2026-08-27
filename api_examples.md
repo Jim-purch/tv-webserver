@@ -2,6 +2,12 @@
 
 服务器默认运行在 **8788** 端口（可用 `python3 server.py --port <端口>` 覆盖）。
 
+## 启动行为与自检
+
+- `python3 server.py` 启动服务时**默认自动拉起 frpc 隧道**，并用 `--no-frpc` 可关闭；
+- 启动后在后台执行一轮自检并把结果打印到控制台：展示页 `/`、管理页 `/admin`、配置接口 `/api/config`、config.json 有效性、frpc 隧道握手状态（就绪 / 报错 / 未确认）；
+- 服务器退出（Ctrl+C / SIGTERM）时会自动结束由它启动的 frpc 进程。
+
 ## 端点
 
 ```

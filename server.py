@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
@@ -184,6 +185,8 @@ def update_frpc_port(port):
 # --- frpc tunnel process management (moved from GUI, thread-safe) ---
 _frpc_lock = threading.Lock()
 _frpc_process = None
+_frpc_ready = threading.Event()  # set when frpc reports "start proxy success"
+_frpc_error = []  # first fatal error line reported by frpc, if any
 
 
 def _frpc_paths():
@@ -230,16 +233,49 @@ def start_frpc_process(server_port):
             return False, f"启动 frpc 失败:\n{e}"
 
         _frpc_process = proc
+        _frpc_ready.clear()
+        del _frpc_error[:]
 
     def read_output():
         try:
             for line in iter(proc.stdout.readline, b""):
-                print(f"[frpc] {line.decode('utf-8', errors='replace').rstrip()}")
+                text = line.decode("utf-8", errors="replace").rstrip()
+                print(f"[frpc] {text}")
+                lowered = text.lower()
+                if "start proxy success" in lowered:
+                    _frpc_ready.set()
+                elif (
+                    "login to server failed" in lowered
+                    or "connect server failed" in lowered
+                    or "resolve server addr failed" in lowered
+                ) and not _frpc_error:
+                    _frpc_error.append(text)
         except Exception:
             pass
 
     threading.Thread(target=read_output, daemon=True).start()
     return True, "frpc 已启动"
+
+
+def wait_frpc_ready(timeout=8):
+    """Wait for the tunnel handshake. Returns (ok, detail).
+
+    ok: True = proxy ready, None = still pending, False = fatal error.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _frpc_error:
+            return False, _frpc_error[0]
+        status = get_frpc_status()
+        if not status["running"]:
+            return False, "frpc 进程意外退出"
+        if _frpc_ready.is_set():
+            return True, status["tunnel_url"]
+        time.sleep(0.3)
+    status = get_frpc_status()
+    if status["running"]:
+        return None, "进程运行中但未确认隧道握手（可稍后重试或检查网络）"
+    return False, "frpc 进程意外退出"
 
 
 def stop_frpc_process():
@@ -280,18 +316,6 @@ def get_frpc_status():
         return {"running": running, "tunnel_url": tunnel_url}
     except Exception:
         return {"running": running, "tunnel_url": ""}
-    try:
-        with open(frpc_conf, "r", encoding="utf-8") as f:
-            content = f.read()
-        new_content = re.sub(r'(localPort\s*=\s*)\d+', f'\\g<1>{port}', content)
-        if new_content != content:
-            with open(frpc_conf, "w", encoding="utf-8") as f:
-                f.write(new_content)
-            print(f"Updated frpc.toml localPort to {port}")
-        return True
-    except Exception as e:
-        print(f"Failed to update frpc.toml: {e}")
-        return False
 
 
 class TVWebHandler(SimpleHTTPRequestHandler):
@@ -550,8 +574,65 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-def run_server(host="0.0.0.0", port=DEFAULT_PORT):
-    """Start the HTTP server."""
+# --- Startup self-check ---
+def _check_http(port, path):
+    """GET a local endpoint; returns (state, detail)."""
+    try:
+        with urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as resp:
+            if resp.status == 200:
+                return "ok", "HTTP 200"
+            return "fail", f"HTTP {resp.status}"
+    except Exception as e:
+        return "fail", str(e)
+
+
+def _check_config():
+    cfg = load_config()
+    count = len(cfg.get("urls", []))
+    return "ok", f"有效，{count} 个展示链接"
+
+
+def _check_frpc_tunnel():
+    ok, detail = wait_frpc_ready(timeout=8)
+    if ok is True:
+        return "ok", f"隧道就绪 {detail}"
+    if ok is None:
+        return "warn", detail
+    return "fail", detail
+
+
+def startup_self_check(port, with_frpc):
+    """Run post-startup self-checks and print the report."""
+    items = [
+        ("展示页 GET /", lambda: _check_http(port, "/")),
+        ("管理页 GET /admin", lambda: _check_http(port, "/admin")),
+        ("配置接口 GET /api/config", lambda: _check_http(port, "/api/config")),
+        ("配置文件 config.json", _check_config),
+    ]
+    if with_frpc and get_frpc_status()["running"]:
+        items.append(("frpc 远程隧道", _check_frpc_tunnel))
+
+    results = []
+    for name, fn in items:
+        try:
+            state, detail = fn()
+        except Exception as e:
+            state, detail = "fail", str(e)
+        results.append((name, state, detail))
+
+    icon = {"ok": "[OK]", "warn": "[警告]", "fail": "[失败]"}
+    print("-" * 50)
+    print("  启动自检结果")
+    for name, state, detail in results:
+        line = f"  {icon.get(state, '[?]')} {name}"
+        if detail:
+            line += f" - {detail}"
+        print(line)
+    print("-" * 50)
+
+
+def run_server(host="0.0.0.0", port=DEFAULT_PORT, with_frpc=True):
+    """Start the HTTP server, auto-start the frpc tunnel and self-check."""
 
     def _graceful_exit(signum, frame):
         print(f"\nReceived signal {signum}, shutting down...")
@@ -559,12 +640,27 @@ def run_server(host="0.0.0.0", port=DEFAULT_PORT):
 
     signal.signal(signal.SIGTERM, _graceful_exit)
 
+    ensure_cache_dir()
+
     server = ThreadingHTTPServer((host, port), TVWebHandler)
-    print(f"=" * 50)
-    print(f"  TV Web Server")
+    print("=" * 50)
+    print("  TV Web Server")
     print(f"  Display:  http://localhost:{port}/")
     print(f"  Admin:    http://localhost:{port}/admin")
+
+    if with_frpc:
+        success, message = start_frpc_process(port)
+        print(f"  frpc:     {message.splitlines()[0]}")
+    else:
+        print("  frpc:     未启动 (--no-frpc)")
     print("=" * 50)
+
+    # Self-check runs in the background so a slow tunnel handshake
+    # never delays serving requests.
+    threading.Thread(
+        target=startup_self_check, args=(port, with_frpc), daemon=True
+    ).start()
+
     try:
         server.serve_forever()
     except (KeyboardInterrupt, SystemExit):
@@ -578,7 +674,8 @@ def run_server(host="0.0.0.0", port=DEFAULT_PORT):
 
 if __name__ == "__main__":
     port = DEFAULT_PORT
+    with_frpc = "--no-frpc" not in sys.argv
     for i, arg in enumerate(sys.argv):
         if arg == "--port" and i + 1 < len(sys.argv):
             port = int(sys.argv[i + 1])
-    run_server("0.0.0.0", port)
+    run_server("0.0.0.0", port, with_frpc=with_frpc)
