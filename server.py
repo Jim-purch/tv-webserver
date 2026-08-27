@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-TV Web Server - Auto-rotating webpage display with GUI configuration.
+TV Web Server - Auto-rotating webpage display, fully configurable
+through the built-in web admin panel (/admin).
 """
 
 import hashlib
@@ -11,18 +12,17 @@ import signal
 import subprocess
 import sys
 import threading
-import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
-from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 from urllib.request import urlopen, Request
-from urllib.error import URLError
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
+
+DEFAULT_PORT = 8788
 
 DEFAULT_CONFIG = {
     "urls": [],
@@ -164,23 +164,122 @@ def save_config(config):
         _config_version += 1
 
 
-def read_frpc_port():
-    """Read the localPort from frpc.toml. Returns the port or 80 as default."""
+def update_frpc_port(port):
+    """Update the localPort in frpc.toml to match the server port."""
     frpc_conf = os.path.join(BASE_DIR, "frpc.toml")
     try:
         with open(frpc_conf, "r", encoding="utf-8") as f:
             content = f.read()
-        match = re.search(r'localPort\s*=\s*(\d+)', content)
-        if match:
-            return int(match.group(1))
+        new_content = re.sub(r'(localPort\s*=\s*)\d+', f'\\g<1>{port}', content)
+        if new_content != content:
+            with open(frpc_conf, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            print(f"Updated frpc.toml localPort to {port}")
+        return True
+    except Exception as e:
+        print(f"Failed to update frpc.toml: {e}")
+        return False
+
+
+# --- frpc tunnel process management (moved from GUI, thread-safe) ---
+_frpc_lock = threading.Lock()
+_frpc_process = None
+
+
+def _frpc_paths():
+    """Return (frpc_binary_path, frpc_config_path)."""
+    frpc_ext = ".exe" if os.name == "nt" else ""
+    return (
+        os.path.join(BASE_DIR, f"frpc{frpc_ext}"),
+        os.path.join(BASE_DIR, "frpc.toml"),
+    )
+
+
+def start_frpc_process(server_port):
+    """Start the frpc subprocess, syncing localPort to this server's port.
+
+    Returns (success, message).
+    """
+    global _frpc_process
+    with _frpc_lock:
+        if _frpc_process is not None and _frpc_process.poll() is None:
+            return False, "frpc 已在运行中"
+
+        frpc_bin, frpc_conf = _frpc_paths()
+        if not os.path.exists(frpc_bin):
+            return False, f"找不到 frpc 可执行文件:\n{frpc_bin}"
+        if not os.path.exists(frpc_conf):
+            return False, f"找不到 frpc 配置文件:\n{frpc_conf}"
+
+        # Sync frpc.toml localPort so the tunnel matches this server's port
+        update_frpc_port(server_port)
+
+        try:
+            creationflags = 0
+            if os.name == "nt":
+                creationflags = 0x08000000  # CREATE_NO_WINDOW
+
+            proc = subprocess.Popen(
+                [frpc_bin, "-c", frpc_conf],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                cwd=BASE_DIR,
+                creationflags=creationflags,
+            )
+        except Exception as e:
+            return False, f"启动 frpc 失败:\n{e}"
+
+        _frpc_process = proc
+
+    def read_output():
+        try:
+            for line in iter(proc.stdout.readline, b""):
+                print(f"[frpc] {line.decode('utf-8', errors='replace').rstrip()}")
+        except Exception:
+            pass
+
+    threading.Thread(target=read_output, daemon=True).start()
+    return True, "frpc 已启动"
+
+
+def stop_frpc_process():
+    """Terminate the frpc subprocess if running. Safe to call repeatedly.
+
+    Returns (success, message).
+    """
+    global _frpc_process
+    with _frpc_lock:
+        proc = _frpc_process
+        if proc is None or proc.poll() is not None:
+            _frpc_process = None
+            return False, "frpc 未在运行"
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        except Exception:
+            pass
+        _frpc_process = None
+    return True, "frpc 已停止"
+
+
+def get_frpc_status():
+    """Return {"running": bool, "tunnel_url": str} parsed from frpc.toml."""
+    with _frpc_lock:
+        running = _frpc_process is not None and _frpc_process.poll() is None
+    _, frpc_conf = _frpc_paths()
+    try:
+        with open(frpc_conf, "r", encoding="utf-8") as f:
+            content = f.read()
+        addr = re.search(r'serverAddr\s*=\s*["\']([^"\']+)["\']', content)
+        rport = re.search(r'remotePort\s*=\s*(\d+)', content)
+        tunnel_url = (
+            f"http://{addr.group(1)}:{rport.group(1)}" if addr and rport else ""
+        )
+        return {"running": running, "tunnel_url": tunnel_url}
     except Exception:
-        pass
-    return 80
-
-
-def update_frpc_port(port):
-    """Update the localPort in frpc.toml to match the server port."""
-    frpc_conf = os.path.join(BASE_DIR, "frpc.toml")
+        return {"running": running, "tunnel_url": ""}
     try:
         with open(frpc_conf, "r", encoding="utf-8") as f:
             content = f.read()
@@ -217,6 +316,8 @@ class TVWebHandler(SimpleHTTPRequestHandler):
         elif path == "/api/music_command":
             state, cached_url, version, celebration = get_music_state()
             self._serve_json({"state": state, "music_url": cached_url, "version": version, "celebration": celebration})
+        elif path == "/api/frpc_status":
+            self._serve_json(get_frpc_status())
         elif path.startswith("/cache/"):
             # Serve cached music files
             filename = path.split("/cache/", 1)[1]
@@ -383,6 +484,35 @@ class TVWebHandler(SimpleHTTPRequestHandler):
                     {"status": "error", "message": f"服务器内部错误: {str(e)}"},
                     500,
                 )
+        elif path == "/api/frpc_control":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body.decode("utf-8"))
+                action = data.get("action", "").strip().lower()
+
+                if action == "start":
+                    success, message = start_frpc_process(self.server.server_port)
+                    self._serve_json(
+                        {"status": "ok" if success else "error", "action": "start", "message": message},
+                        200 if success else 400,
+                    )
+                elif action == "stop":
+                    success, message = stop_frpc_process()
+                    self._serve_json(
+                        {"status": "ok" if success else "error", "action": "stop", "message": message},
+                        200 if success else 400,
+                    )
+                else:
+                    self._serve_json(
+                        {"status": "error", "message": f"无效的action: '{action}'，支持: start, stop"},
+                        400,
+                    )
+            except json.JSONDecodeError:
+                self._serve_json(
+                    {"status": "error", "message": "请求体必须是有效的JSON"},
+                    400,
+                )
         else:
             self.send_error(404)
 
@@ -420,629 +550,35 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-def run_server(host="0.0.0.0", port=80):
+def run_server(host="0.0.0.0", port=DEFAULT_PORT):
     """Start the HTTP server."""
+
+    def _graceful_exit(signum, frame):
+        print(f"\nReceived signal {signum}, shutting down...")
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _graceful_exit)
+
     server = ThreadingHTTPServer((host, port), TVWebHandler)
     print(f"=" * 50)
     print(f"  TV Web Server")
     print(f"  Display:  http://localhost:{port}/")
     print(f"  Admin:    http://localhost:{port}/admin")
-    print(f"=" * 50)
+    print("=" * 50)
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nServer stopped.")
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        # Clean up the frpc tunnel process on exit
+        stop_frpc_process()
         server.server_close()
-
-
-def run_gui():
-    """Launch the Tkinter GUI for configuration."""
-    try:
-        import tkinter as tk
-        from tkinter import ttk, messagebox, simpledialog
-    except ImportError:
-        print("Tkinter is not available. Use the web admin panel at /admin instead.")
-        return
-
-    config = load_config()
-
-    root = tk.Tk()
-    root.title("TV Web Server - 配置管理")
-    root.geometry("700x850")
-    root.configure(bg="#1a1a2e")
-
-    # Style
-    style = ttk.Style()
-    style.theme_use("clam")
-    style.configure("TFrame", background="#1a1a2e")
-    style.configure(
-        "TLabel", background="#1a1a2e", foreground="#e0e0e0", font=("Helvetica", 11)
-    )
-    style.configure(
-        "Title.TLabel",
-        background="#1a1a2e",
-        foreground="#00d4ff",
-        font=("Helvetica", 18, "bold"),
-    )
-    style.configure(
-        "TButton",
-        font=("Helvetica", 10),
-        padding=6,
-    )
-    style.configure(
-        "Accent.TButton",
-        font=("Helvetica", 11, "bold"),
-        padding=8,
-    )
-
-    # Title
-    title_frame = ttk.Frame(root)
-    title_frame.pack(fill="x", padx=20, pady=(15, 5))
-    ttk.Label(title_frame, text="📺 TV Web Server 配置", style="Title.TLabel").pack(
-        anchor="w"
-    )
-
-    # URL list section
-    url_frame = ttk.Frame(root)
-    url_frame.pack(fill="both", expand=True, padx=20, pady=10)
-
-    ttk.Label(url_frame, text="网页链接列表:").pack(anchor="w", pady=(0, 5))
-
-    list_frame = ttk.Frame(url_frame)
-    list_frame.pack(fill="both", expand=True)
-
-    url_listbox = tk.Listbox(
-        list_frame,
-        height=5,
-        bg="#16213e",
-        fg="#e0e0e0",
-        selectbackground="#0f3460",
-        selectforeground="#00d4ff",
-        font=("Consolas", 11),
-        relief="flat",
-        highlightthickness=1,
-        highlightcolor="#0f3460",
-    )
-    scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=url_listbox.yview)
-    url_listbox.configure(yscrollcommand=scrollbar.set)
-    url_listbox.pack(side="left", fill="both", expand=True)
-    scrollbar.pack(side="right", fill="y")
-
-    # Populate list
-    for url in config.get("urls", []):
-        url_listbox.insert("end", url)
-
-    # URL buttons
-    btn_frame = ttk.Frame(url_frame)
-    btn_frame.pack(fill="x", pady=(8, 0))
-
-    # --- GUI config sync state (track local edits so we don't clobber them) ---
-    _gui_config_dirty = tk.BooleanVar(value=False)
-    _gui_loading_config = [False]  # guard so programmatic reloads don't mark dirty
-    _gui_last_config_version = [get_config_version()]
-
-    def mark_gui_dirty():
-        if not _gui_loading_config[0]:
-            _gui_config_dirty.set(True)
-
-    def add_url():
-        url = simpledialog.askstring("添加链接", "请输入网页链接:", parent=root)
-        if url and url.strip():
-            url_listbox.insert("end", url.strip())
-            mark_gui_dirty()
-
-    def remove_url():
-        sel = url_listbox.curselection()
-        if sel:
-            url_listbox.delete(sel[0])
-            mark_gui_dirty()
-        else:
-            messagebox.showwarning("提示", "请先选择要删除的链接")
-
-    def move_up():
-        sel = url_listbox.curselection()
-        if sel and sel[0] > 0:
-            idx = sel[0]
-            text = url_listbox.get(idx)
-            url_listbox.delete(idx)
-            url_listbox.insert(idx - 1, text)
-            url_listbox.selection_set(idx - 1)
-            mark_gui_dirty()
-
-    def move_down():
-        sel = url_listbox.curselection()
-        if sel and sel[0] < url_listbox.size() - 1:
-            idx = sel[0]
-            text = url_listbox.get(idx)
-            url_listbox.delete(idx)
-            url_listbox.insert(idx + 1, text)
-            url_listbox.selection_set(idx + 1)
-            mark_gui_dirty()
-
-    def edit_url():
-        sel = url_listbox.curselection()
-        if sel:
-            old = url_listbox.get(sel[0])
-            new = simpledialog.askstring(
-                "编辑链接", "修改网页链接:", initialvalue=old, parent=root
-            )
-            if new and new.strip():
-                url_listbox.delete(sel[0])
-                url_listbox.insert(sel[0], new.strip())
-                mark_gui_dirty()
-        else:
-            messagebox.showwarning("提示", "请先选择要编辑的链接")
-
-    ttk.Button(btn_frame, text="➕ 添加", command=add_url).pack(
-        side="left", padx=(0, 5)
-    )
-    ttk.Button(btn_frame, text="✏️ 编辑", command=edit_url).pack(
-        side="left", padx=(0, 5)
-    )
-    ttk.Button(btn_frame, text="🗑️ 删除", command=remove_url).pack(
-        side="left", padx=(0, 5)
-    )
-    ttk.Button(btn_frame, text="⬆️ 上移", command=move_up).pack(
-        side="left", padx=(0, 5)
-    )
-    ttk.Button(btn_frame, text="⬇️ 下移", command=move_down).pack(
-        side="left", padx=(0, 5)
-    )
-
-    # Interval setting
-    interval_frame = ttk.Frame(root)
-    interval_frame.pack(fill="x", padx=20, pady=10)
-
-    ttk.Label(interval_frame, text="自动切换间隔 (秒):").pack(side="left")
-    interval_var = tk.StringVar(value=str(config.get("interval", 10)))
-    interval_entry = tk.Entry(
-        interval_frame,
-        textvariable=interval_var,
-        width=8,
-        bg="#16213e",
-        fg="#00d4ff",
-        font=("Consolas", 13),
-        relief="flat",
-        insertbackground="#00d4ff",
-    )
-    interval_entry.pack(side="left", padx=10)
-
-    # --- Music section ---
-    music_sep = ttk.Separator(root, orient="horizontal")
-    music_sep.pack(fill="x", padx=20, pady=(10, 5))
-
-    music_title_frame = ttk.Frame(root)
-    music_title_frame.pack(fill="x", padx=20, pady=(0, 5))
-    ttk.Label(
-        music_title_frame,
-        text="🎵 音乐播放",
-        font=("Helvetica", 14, "bold"),
-        foreground="#00d4ff",
-    ).pack(anchor="w")
-
-    music_url_frame = ttk.Frame(root)
-    music_url_frame.pack(fill="x", padx=20, pady=(0, 5))
-
-    ttk.Label(music_url_frame, text="音乐链接:").pack(side="left")
-    music_url_var = tk.StringVar(value=config.get("music_url", ""))
-    music_url_entry = tk.Entry(
-        music_url_frame,
-        textvariable=music_url_var,
-        bg="#16213e",
-        fg="#e0e0e0",
-        font=("Consolas", 11),
-        relief="flat",
-        insertbackground="#00d4ff",
-    )
-    music_url_entry.pack(side="left", fill="x", expand=True, padx=(10, 0))
-
-    # Track interval/music edits so config sync won't clobber in-progress typing
-    interval_var.trace_add("write", lambda *a: mark_gui_dirty())
-    music_url_var.trace_add("write", lambda *a: mark_gui_dirty())
-
-    music_ctrl_frame = ttk.Frame(root)
-    music_ctrl_frame.pack(fill="x", padx=20, pady=(5, 5))
-
-    music_status_var = tk.StringVar(value="● 已停止")
-    music_status_label = ttk.Label(
-        music_ctrl_frame,
-        textvariable=music_status_var,
-        foreground="#ff6b6b",
-        font=("Helvetica", 11),
-    )
-    music_status_label.pack(side="right", padx=10)
-
-    def play_music():
-        """Download (if needed) and issue play command to clients."""
-        url = music_url_var.get().strip()
-        if not url:
-            messagebox.showwarning("提示", "请先输入音乐链接")
-            return
-
-        # Save music URL to config
-        cfg = load_config()
-        cfg["music_url"] = url
-        save_config(cfg)
-
-        music_status_var.set("● 下载中...")
-        music_status_label.configure(foreground="#ffaa00")
-        root.update_idletasks()
-
-        def do_download():
-            success, result = download_music(url)
-            if success:
-                cache_url = f"/cache/{result}"
-                set_music_command("play", cache_url)
-                root.after(0, lambda: music_status_var.set("● 播放中"))
-                root.after(
-                    0,
-                    lambda: music_status_label.configure(foreground="#00ff88"),
-                )
-            else:
-                root.after(
-                    0,
-                    lambda: messagebox.showerror(
-                        "错误", f"音乐下载失败:\n{result}"
-                    ),
-                )
-                root.after(0, lambda: music_status_var.set("● 下载失败"))
-                root.after(
-                    0,
-                    lambda: music_status_label.configure(foreground="#ff6b6b"),
-                )
-
-        threading.Thread(target=do_download, daemon=True).start()
-
-    def stop_music():
-        """Issue stop command to clients."""
-        set_music_command("stop")
-        music_status_var.set("● 已停止")
-        music_status_label.configure(foreground="#ff6b6b")
-
-    ttk.Button(
-        music_ctrl_frame,
-        text="▶️ 播放音乐",
-        style="Accent.TButton",
-        command=play_music,
-    ).pack(side="left", padx=(0, 5))
-
-    ttk.Button(
-        music_ctrl_frame,
-        text="⏹️ 停止音乐",
-        style="Accent.TButton",
-        command=stop_music,
-    ).pack(side="left", padx=(0, 5))
-
-    # --- GUI music state sync (detect remote API changes) ---
-    _gui_last_music_version = [-1]  # mutable container for closure
-
-    def sync_music_status():
-        """Poll the global music state and update GUI labels accordingly."""
-        state, cached_url, version, _celebration = get_music_state()
-        if version != _gui_last_music_version[0]:
-            _gui_last_music_version[0] = version
-            if state == "playing":
-                music_status_var.set("● 播放中")
-                music_status_label.configure(foreground="#00ff88")
-            else:
-                music_status_var.set("● 已停止")
-                music_status_label.configure(foreground="#ff6b6b")
-        root.after(2000, sync_music_status)
-
-    # Start the sync loop
-    root.after(2000, sync_music_status)
-
-    # --- GUI config sync (reload list when other clients save) ---
-    def reload_gui_config():
-        """Reload config from disk into the GUI widgets (thread-safe via root.after)."""
-        _gui_loading_config[0] = True
-        try:
-            new_config = load_config()
-            # Update URL listbox
-            url_listbox.delete(0, "end")
-            for url in new_config.get("urls", []):
-                url_listbox.insert("end", url)
-            # Update interval/music fields only if absent local edits to those fields
-            try:
-                interval_var.set(str(new_config.get("interval", 10)))
-            except Exception:
-                pass
-            music_url_var.set(new_config.get("music_url", ""))
-            # Keep local snapshot of fullscreen_selectors up to date
-            config["fullscreen_selectors"] = new_config.get(
-                "fullscreen_selectors", DEFAULT_CONFIG["fullscreen_selectors"]
-            )
-            config["urls"] = new_config.get("urls", [])
-            config["interval"] = new_config.get("interval", 10)
-            config["music_url"] = new_config.get("music_url", "")
-        finally:
-            _gui_loading_config[0] = False
-        _gui_config_dirty.set(False)
-        _gui_last_config_version[0] = get_config_version()
-
-    def sync_config_status():
-        """Poll config version; if changed and no local edits, reload the list."""
-        current_version = get_config_version()
-        if current_version != _gui_last_config_version[0]:
-            _gui_last_config_version[0] = current_version
-            if not _gui_config_dirty.get():
-                reload_gui_config()
-        root.after(2000, sync_config_status)
-
-    # Start the config sync loop
-    root.after(2000, sync_config_status)
-
-    # --- frpc tunnel section ---
-    frpc_sep = ttk.Separator(root, orient="horizontal")
-    frpc_sep.pack(fill="x", padx=20, pady=(10, 5))
-
-    frpc_title_frame = ttk.Frame(root)
-    frpc_title_frame.pack(fill="x", padx=20, pady=(0, 5))
-    ttk.Label(
-        frpc_title_frame,
-        text="🔗 frpc 远程隧道",
-        font=("Helvetica", 14, "bold"),
-        foreground="#00d4ff",
-    ).pack(anchor="w")
-
-    frpc_ctrl_frame = ttk.Frame(root)
-    frpc_ctrl_frame.pack(fill="x", padx=20, pady=(0, 5))
-
-    frpc_process = None
-    frpc_running = tk.BooleanVar(value=False)
-
-    frpc_status_var = tk.StringVar(value="● 未启动")
-    frpc_status_label = ttk.Label(
-        frpc_ctrl_frame,
-        textvariable=frpc_status_var,
-        foreground="#ff6b6b",
-        font=("Helvetica", 11),
-    )
-    frpc_status_label.pack(side="right", padx=10)
-
-    def start_frpc():
-        nonlocal frpc_process
-        if frpc_running.get():
-            messagebox.showinfo("提示", "frpc 已在运行中")
-            return
-
-        frpc_ext = ".exe" if os.name == "nt" else ""
-        frpc_bin = os.path.join(BASE_DIR, f"frpc{frpc_ext}")
-        frpc_conf = os.path.join(BASE_DIR, "frpc.toml")
-
-        if not os.path.exists(frpc_bin):
-            messagebox.showerror("错误", f"找不到 frpc 可执行文件:\n{frpc_bin}")
-            return
-        if not os.path.exists(frpc_conf):
-            messagebox.showerror("错误", f"找不到 frpc 配置文件:\n{frpc_conf}")
-            return
-
-        # Sync frpc.toml localPort with current GUI port before launching
-        try:
-            current_port = int(port_var.get())
-            update_frpc_port(current_port)
-        except ValueError:
-            pass
-
-        try:
-            creationflags = 0
-            if os.name == "nt":
-                creationflags = 0x08000000  # CREATE_NO_WINDOW
-
-            frpc_process = subprocess.Popen(
-                [frpc_bin, "-c", frpc_conf],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=BASE_DIR,
-                creationflags=creationflags,
-            )
-            frpc_running.set(True)
-            frpc_status_var.set("● 运行中")
-            frpc_status_label.configure(foreground="#00ff88")
-
-            # Background thread to read frpc output
-            def read_frpc_output():
-                try:
-                    for line in iter(frpc_process.stdout.readline, b""):
-                        print(f"[frpc] {line.decode('utf-8', errors='replace').rstrip()}")
-                except Exception:
-                    pass
-                # Process ended
-                frpc_running.set(False)
-                root.after(0, lambda: frpc_status_var.set("● 已停止"))
-                root.after(
-                    0, lambda: frpc_status_label.configure(foreground="#ff6b6b")
-                )
-
-            threading.Thread(target=read_frpc_output, daemon=True).start()
-        except Exception as e:
-            messagebox.showerror("错误", f"启动 frpc 失败:\n{e}")
-            frpc_status_var.set("● 启动失败")
-            frpc_status_label.configure(foreground="#ff6b6b")
-
-    def stop_frpc():
-        nonlocal frpc_process
-        if not frpc_running.get() or frpc_process is None:
-            messagebox.showinfo("提示", "frpc 未在运行")
-            return
-        try:
-            frpc_process.terminate()
-            frpc_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            frpc_process.kill()
-        except Exception:
-            pass
-        frpc_process = None
-        frpc_running.set(False)
-        frpc_status_var.set("● 已停止")
-        frpc_status_label.configure(foreground="#ff6b6b")
-
-    ttk.Button(
-        frpc_ctrl_frame,
-        text="🚀 启动 frpc",
-        style="Accent.TButton",
-        command=start_frpc,
-    ).pack(side="left", padx=(0, 5))
-
-    ttk.Button(
-        frpc_ctrl_frame,
-        text="⏹️ 停止 frpc",
-        style="Accent.TButton",
-        command=stop_frpc,
-    ).pack(side="left", padx=(0, 5))
-
-    # Server controls
-    server_frame = ttk.Frame(root)
-    server_frame.pack(fill="x", padx=20, pady=(5, 5))
-
-    ttk.Label(server_frame, text="服务器端口:").pack(side="left")
-    port_var = tk.StringVar(value=str(read_frpc_port()))
-    port_entry = tk.Entry(
-        server_frame,
-        textvariable=port_var,
-        width=8,
-        bg="#16213e",
-        fg="#00d4ff",
-        font=("Consolas", 13),
-        relief="flat",
-        insertbackground="#00d4ff",
-    )
-    port_entry.pack(side="left", padx=10)
-
-    server_thread = None
-    server_running = tk.BooleanVar(value=False)
-
-    status_label = ttk.Label(
-        server_frame, text="● 未启动", foreground="#ff6b6b", font=("Helvetica", 11)
-    )
-    status_label.pack(side="right", padx=10)
-
-    def save_and_apply():
-        urls = [url_listbox.get(i) for i in range(url_listbox.size())]
-        try:
-            interval = max(1, int(interval_var.get()))
-        except ValueError:
-            messagebox.showerror("错误", "间隔时间必须是整数")
-            return
-
-        new_config = {
-            "urls": urls,
-            "interval": interval,
-            "fullscreen_selectors": config.get(
-                "fullscreen_selectors", DEFAULT_CONFIG["fullscreen_selectors"]
-            ),
-            "music_url": music_url_var.get().strip(),
-        }
-        save_config(new_config)
-        _gui_config_dirty.set(False)
-        _gui_last_config_version[0] = get_config_version()
-        messagebox.showinfo("成功", "配置已保存！正在展示的页面会自动更新。")
-
-    def start_server():
-        nonlocal server_thread
-        if server_running.get():
-            messagebox.showinfo("提示", "服务器已在运行中")
-            return
-        # Save config first
-        save_and_apply_silent()
-
-        try:
-            port = int(port_var.get())
-        except ValueError:
-            messagebox.showerror("错误", "端口号必须是整数")
-            return
-
-        # Sync port to frpc.toml so tunnel matches server
-        update_frpc_port(port)
-
-        server_thread = threading.Thread(
-            target=run_server, args=("0.0.0.0", port), daemon=True
-        )
-        server_thread.start()
-        server_running.set(True)
-        status_label.configure(text=f"● 运行中 (:{port})", foreground="#00ff88")
-        webbrowser.open(f"http://localhost:{port}/")
-
-    def save_and_apply_silent():
-        urls = [url_listbox.get(i) for i in range(url_listbox.size())]
-        try:
-            interval = max(1, int(interval_var.get()))
-        except ValueError:
-            interval = 10
-        new_config = {
-            "urls": urls,
-            "interval": interval,
-            "fullscreen_selectors": config.get(
-                "fullscreen_selectors", DEFAULT_CONFIG["fullscreen_selectors"]
-            ),
-            "music_url": music_url_var.get().strip(),
-        }
-        save_config(new_config)
-        _gui_config_dirty.set(False)
-        _gui_last_config_version[0] = get_config_version()
-
-    # Action buttons
-    action_frame = ttk.Frame(root)
-    action_frame.pack(fill="x", padx=20, pady=(10, 15))
-
-    ttk.Button(
-        action_frame,
-        text="💾 保存配置",
-        style="Accent.TButton",
-        command=save_and_apply,
-    ).pack(side="left", padx=(0, 10))
-
-    ttk.Button(
-        action_frame,
-        text="🚀 启动服务器",
-        style="Accent.TButton",
-        command=start_server,
-    ).pack(side="left", padx=(0, 10))
-
-    def open_display():
-        try:
-            port = int(port_var.get())
-        except ValueError:
-            port = 80
-        webbrowser.open(f"http://localhost:{port}/")
-
-    def open_admin():
-        try:
-            port = int(port_var.get())
-        except ValueError:
-            port = 80
-        webbrowser.open(f"http://localhost:{port}/admin")
-
-    ttk.Button(action_frame, text="🖥️ 打开展示页", command=open_display).pack(
-        side="left", padx=(0, 10)
-    )
-    ttk.Button(action_frame, text="⚙️ 打开管理页", command=open_admin).pack(
-        side="left", padx=(0, 10)
-    )
-
-    # Clean up frpc on window close
-    def on_closing():
-        if frpc_running.get() and frpc_process is not None:
-            try:
-                frpc_process.terminate()
-                frpc_process.wait(timeout=3)
-            except Exception:
-                try:
-                    frpc_process.kill()
-                except Exception:
-                    pass
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_closing)
-    root.mainloop()
+        print("\nServer stopped.")
 
 
 if __name__ == "__main__":
-    if "--no-gui" in sys.argv:
-        port = 80
-        for i, arg in enumerate(sys.argv):
-            if arg == "--port" and i + 1 < len(sys.argv):
-                port = int(sys.argv[i + 1])
-        run_server("0.0.0.0", port)
-    else:
-        run_gui()
+    port = DEFAULT_PORT
+    for i, arg in enumerate(sys.argv):
+        if arg == "--port" and i + 1 < len(sys.argv):
+            port = int(sys.argv[i + 1])
+    run_server("0.0.0.0", port)

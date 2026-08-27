@@ -342,6 +342,54 @@
             box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.08);
         }
 
+        /* Control rows (music / frpc cards) */
+        .control-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 16px;
+        }
+
+        .status-label {
+            margin-left: auto;
+            font-size: 13px;
+            font-weight: 500;
+            white-space: nowrap;
+            transition: color 0.2s;
+        }
+
+        .status-label.stopped {
+            color: #ff6b6b;
+        }
+
+        .status-label.downloading {
+            color: #ffaa00;
+        }
+
+        .status-label.running {
+            color: #00ff88;
+        }
+
+        /* Hint lines */
+        .hint {
+            font-size: 12px;
+            color: #556;
+            margin-top: 14px;
+            line-height: 1.6;
+            word-break: break-all;
+        }
+
+        .hint a {
+            color: #00d4ff;
+            text-decoration: none;
+            user-select: all;
+        }
+
+        .hint a:hover {
+            text-decoration: underline;
+        }
+
         /* Save bar */
         .save-bar {
             position: fixed;
@@ -475,6 +523,36 @@
             </div>
         </div>
 
+        <!-- Music Card -->
+        <div class="card">
+            <div class="card-title">🎵 音乐播放</div>
+            <div class="setting-item">
+                <label for="music-url">音乐链接</label>
+                <input type="text" id="music-url" placeholder="https://example.com/congratulations.mp3"
+                    spellcheck="false">
+            </div>
+            <div class="control-row">
+                <button class="btn btn-success" id="btn-music-play">▶️ 播放音乐</button>
+                <button class="btn btn-secondary" id="btn-music-stop">⏹️ 停止音乐</button>
+                <span class="status-label stopped" id="music-status">● 已停止</span>
+            </div>
+            <p class="hint">点击播放后，所有展示页会同步开始播放音乐；也可以通过远程 API 或隧道触发。</p>
+        </div>
+
+        <!-- frpc Tunnel Card -->
+        <div class="card">
+            <div class="card-title">🔗 frpc 远程隧道</div>
+            <p class="hint" style="margin-top: 0;">将本机服务映射到云端，供外部通过隧道访问展示页与控制接口。启动时会自动把
+                frpc.toml 的 localPort 同步为本服务器端口 (8788)。</p>
+            <div class="control-row">
+                <button class="btn btn-primary" id="btn-frpc-start">🚀 启动 frpc</button>
+                <button class="btn btn-secondary" id="btn-frpc-stop">⏹️ 停止 frpc</button>
+                <span class="status-label stopped" id="frpc-status">● 未启动</span>
+            </div>
+            <p class="hint" id="frpc-tunnel-line" style="display:none;">📡 远程控制地址: <a id="frpc-tunnel-link"
+                    target="_blank"></a></p>
+        </div>
+
         <!-- Quick actions -->
         <div class="card">
             <div class="card-title">🚀 快捷操作</div>
@@ -512,6 +590,11 @@
             const fullscreenKeywords = document.getElementById('fullscreen-keywords');
             const saveBar = document.getElementById('save-bar');
             const toastEl = document.getElementById('toast');
+            const musicUrlInput = document.getElementById('music-url');
+            const musicStatusEl = document.getElementById('music-status');
+            const frpcStatusEl = document.getElementById('frpc-status');
+            const frpcTunnelLine = document.getElementById('frpc-tunnel-line');
+            const frpcTunnelLink = document.getElementById('frpc-tunnel-link');
 
             // Load config
             async function loadConfig() {
@@ -523,6 +606,7 @@
                     renderUrlList(config.urls);
                     intervalInput.value = config.interval || 10;
                     fullscreenKeywords.value = (config.fullscreen_selectors || []).join(',');
+                    musicUrlInput.value = config.music_url || '';
                     markClean();
                 } catch (e) {
                     showToast('加载配置失败: ' + e.message, 'error');
@@ -641,6 +725,7 @@
                     urls: getUrlsFromDOM(),
                     interval: Math.max(1, parseInt(intervalInput.value) || 10),
                     fullscreen_selectors: selectors.length > 0 ? selectors : ['全屏显示', '全屏', 'fullscreen'],
+                    music_url: musicUrlInput.value.trim(),
                 };
             }
 
@@ -729,6 +814,7 @@
 
             intervalInput.addEventListener('input', markDirty);
             fullscreenKeywords.addEventListener('input', markDirty);
+            musicUrlInput.addEventListener('input', markDirty);
 
             // --- Multi-client sync: poll config version ---
             async function pollConfigVersion() {
@@ -751,6 +837,132 @@
                 }
             }
 
+            // --- 音乐播放 (migrated from Tkinter GUI) ---
+            let lastMusicVersion = -1;
+
+            function setMusicStatus(text, cls) {
+                musicStatusEl.textContent = text;
+                musicStatusEl.className = 'status-label ' + cls;
+            }
+
+            document.getElementById('btn-music-play').addEventListener('click', async () => {
+                const url = musicUrlInput.value.trim();
+                if (!url) {
+                    showToast('请先输入音乐链接', 'error');
+                    return;
+                }
+                setMusicStatus('● 下载中...', 'downloading');
+                try {
+                    const resp = await fetch('/api/remote/music', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'play', music_url: url }),
+                    });
+                    const result = await resp.json();
+                    if (result.status === 'ok') {
+                        setMusicStatus('● 播放中', 'running');
+                        showToast('🎵 播放指令已发送，展示页将同步播放', 'success');
+                    } else {
+                        setMusicStatus('● 下载失败', 'stopped');
+                        showToast('播放失败: ' + (result.message || ('HTTP ' + resp.status)), 'error');
+                    }
+                } catch (e) {
+                    setMusicStatus('● 已停止', 'stopped');
+                    showToast('播放失败: ' + e.message, 'error');
+                }
+            });
+
+            document.getElementById('btn-music-stop').addEventListener('click', async () => {
+                try {
+                    const resp = await fetch('/api/remote/music', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'stop' }),
+                    });
+                    const result = await resp.json();
+                    if (result.status === 'ok') {
+                        setMusicStatus('● 已停止', 'stopped');
+                        showToast('⏹️ 已发送停止指令，展示页恢复轮播', 'success');
+                    } else {
+                        showToast('停止失败: ' + (result.message || ('HTTP ' + resp.status)), 'error');
+                    }
+                } catch (e) {
+                    showToast('停止失败: ' + e.message, 'error');
+                }
+            });
+
+            // Sync status label with remote API / other clients
+            async function pollMusicStatus() {
+                try {
+                    const resp = await fetch('/api/music_command');
+                    const data = await resp.json();
+                    if (data.version === lastMusicVersion) return;
+                    lastMusicVersion = data.version;
+                    if (data.state === 'playing') {
+                        setMusicStatus('● 播放中', 'running');
+                    } else {
+                        setMusicStatus('● 已停止', 'stopped');
+                    }
+                } catch (e) {
+                    // ignore polling errors
+                }
+            }
+
+            // --- frpc 远程隧道 (migrated from Tkinter GUI) ---
+            function setFrpcStatus(running, tunnelUrl) {
+                frpcStatusEl.textContent = running ? '● 运行中' : '● 未启动';
+                frpcStatusEl.className = 'status-label ' + (running ? 'running' : 'stopped');
+                if (tunnelUrl) {
+                    frpcTunnelLink.textContent = tunnelUrl + '/api/remote/music';
+                    frpcTunnelLink.href = tunnelUrl;
+                    frpcTunnelLine.style.display = 'block';
+                } else {
+                    frpcTunnelLine.style.display = 'none';
+                }
+            }
+
+            async function pollFrpcStatus() {
+                try {
+                    const resp = await fetch('/api/frpc_status');
+                    const data = await resp.json();
+                    setFrpcStatus(!!data.running, data.tunnel_url || '');
+                } catch (e) {
+                    // ignore polling errors
+                }
+            }
+
+            document.getElementById('btn-frpc-start').addEventListener('click', async () => {
+                try {
+                    const resp = await fetch('/api/frpc_control', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'start' }),
+                    });
+                    const result = await resp.json();
+                    showToast(result.status === 'ok' ? '🚀 ' + result.message : result.message,
+                        result.status === 'ok' ? 'success' : 'error');
+                    await pollFrpcStatus();
+                } catch (e) {
+                    showToast('启动 frpc 失败: ' + e.message, 'error');
+                }
+            });
+
+            document.getElementById('btn-frpc-stop').addEventListener('click', async () => {
+                try {
+                    const resp = await fetch('/api/frpc_control', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'stop' }),
+                    });
+                    const result = await resp.json();
+                    showToast(result.status === 'ok' ? '⏹️ ' + result.message : result.message,
+                        result.status === 'ok' ? 'success' : 'error');
+                    await pollFrpcStatus();
+                } catch (e) {
+                    showToast('停止 frpc 失败: ' + e.message, 'error');
+                }
+            });
+
             // Warn before leaving with unsaved changes
             window.addEventListener('beforeunload', (e) => {
                 if (hasChanges) {
@@ -761,8 +973,14 @@
 
             // Init
             loadConfig();
+            pollMusicStatus();
+            pollFrpcStatus();
             // Poll for config changes from other clients every 2 seconds
             setInterval(pollConfigVersion, 2000);
+            // Poll music state so the label reflects remote API / display-page changes
+            setInterval(pollMusicStatus, 2000);
+            // Poll frpc tunnel state
+            setInterval(pollFrpcStatus, 2000);
         })();
     </script>
 </body>

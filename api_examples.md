@@ -1,5 +1,7 @@
 # TV Web Server - 远程音乐控制 API
 
+服务器默认运行在 **8788** 端口（可用 `python3 server.py --port <端口>` 覆盖）。
+
 ## 端点
 
 ```
@@ -193,7 +195,7 @@ Content-Type: application/json
 
 ```bash
 # 播放（含祝贺展示）
-curl -X POST http://localhost:8080/api/remote/music \
+curl -X POST http://localhost:8788/api/remote/music \
   -H "Content-Type: application/json" \
   -d '{
     "action": "play",
@@ -203,7 +205,49 @@ curl -X POST http://localhost:8080/api/remote/music \
   }'
 
 # 停止
-curl -X POST http://localhost:8080/api/remote/music \
+curl -X POST http://localhost:8788/api/remote/music \
   -H "Content-Type: application/json" \
   -d '{"action": "stop"}'
 ```
+
+---
+
+## frpc 隧道管理（管理面板 /admin 也提供同名按钮）
+
+### 启动隧道
+
+启动本地 frpc 子进程；启动前会自动把 frpc.toml 的 localPort 同步为当前服务器端口：
+
+```bash
+curl -X POST http://localhost:8788/api/frpc_control \
+  -H "Content-Type: application/json" \
+  -d '{"action": "start"}'
+```
+
+成功响应 (200)：
+
+```json
+{"status": "ok", "action": "start", "message": "frpc 已启动"}
+```
+
+已在运行时返回 (400)：`{"status": "error", "action": "start", "message": "frpc 已在运行中"}`
+
+### 停止隧道
+
+```bash
+curl -X POST http://localhost:8788/api/frpc_control \
+  -H "Content-Type: application/json" \
+  -d '{"action": "stop"}'
+```
+
+### 查询隧道状态
+
+```bash
+curl http://localhost:8788/api/frpc_status
+```
+
+```json
+{"running": false, "tunnel_url": "http://124.222.43.107:39988"}
+```
+
+> 服务器进程退出（Ctrl+C / SIGTERM）时会自动结束由它启动的 frpc 隧道。
