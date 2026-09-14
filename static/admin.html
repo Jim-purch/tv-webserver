@@ -662,11 +662,18 @@
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ url: url }),
                             });
-                            const result = await resp.json();
-                            if (result.status === 'ok') {
+                            let result = null;
+                            try {
+                                result = await resp.json();
+                            } catch (parseErr) {
+                                // Non-JSON response (e.g. 404 HTML page from an old server process)
+                                showToast('切换失败: HTTP ' + resp.status + '（服务端可能是旧版本，请重启 server.py 后重试）', 'error');
+                                return;
+                            }
+                            if (result && result.status === 'ok') {
                                 showToast('📺 已通知所有展示页切换到画面 ' + (i + 1) + '，轮播继续', 'success');
                             } else {
-                                showToast('切换失败: ' + (result.message || ('HTTP ' + resp.status)), 'error');
+                                showToast('切换失败: ' + ((result && result.message) || ('HTTP ' + resp.status)), 'error');
                             }
                         } catch (e) {
                             showToast('切换失败: ' + e.message, 'error');
