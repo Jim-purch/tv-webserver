@@ -78,6 +78,26 @@ def get_music_state():
         return _music_state, _music_cached_url, _music_version, _music_celebration_data.copy()
 
 
+# --- Force page state (thread-safe, one-shot broadcast with version) ---
+_force_lock = threading.Lock()
+_forced_url = ""
+_force_version = 0
+
+
+def set_force_page(url):
+    """Broadcast a one-shot 'all clients switch to this page' command."""
+    global _forced_url, _force_version
+    with _force_lock:
+        _forced_url = url
+        _force_version += 1
+
+
+def get_force_state():
+    """Get the latest forced page (url, version)."""
+    with _force_lock:
+        return _forced_url, _force_version
+
+
 # --- Music caching ---
 def ensure_cache_dir():
     """Ensure the cache directory exists."""
@@ -340,6 +360,9 @@ class TVWebHandler(SimpleHTTPRequestHandler):
         elif path == "/api/music_command":
             state, cached_url, version, celebration = get_music_state()
             self._serve_json({"state": state, "music_url": cached_url, "version": version, "celebration": celebration})
+        elif path == "/api/force_page":
+            forced_url, version = get_force_state()
+            self._serve_json({"url": forced_url, "version": version})
         elif path == "/api/frpc_status":
             self._serve_json(get_frpc_status())
         elif path.startswith("/cache/"):
@@ -507,6 +530,33 @@ class TVWebHandler(SimpleHTTPRequestHandler):
                 self._serve_json(
                     {"status": "error", "message": f"服务器内部错误: {str(e)}"},
                     500,
+                )
+        elif path == "/api/force_page":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body.decode("utf-8"))
+                url = data.get("url", "").strip()
+                if not url:
+                    self._serve_json({"status": "error", "message": "缺少 url 字段"}, 400)
+                    return
+                if url not in load_config().get("urls", []):
+                    self._serve_json(
+                        {
+                            "status": "error",
+                            "message": "该链接不在已保存的列表中，请先保存配置",
+                        },
+                        400,
+                    )
+                    return
+                set_force_page(url)
+                self._serve_json(
+                    {"status": "ok", "message": "切换指令已发送", "url": url}
+                )
+            except json.JSONDecodeError:
+                self._serve_json(
+                    {"status": "error", "message": "请求体必须是有效的JSON"},
+                    400,
                 )
         elif path == "/api/frpc_control":
             content_length = int(self.headers.get("Content-Length", 0))

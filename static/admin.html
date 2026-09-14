@@ -221,6 +221,11 @@
             color: #e0e0e0;
         }
 
+        .url-item .actions button.cast:hover {
+            color: #00cc77;
+            background: rgba(0, 204, 119, 0.1);
+        }
+
         .url-item .actions button.delete:hover {
             color: #ff6b6b;
             background: rgba(255, 107, 107, 0.1);
@@ -506,6 +511,7 @@
                 <input type="text" id="new-url-input" placeholder="输入网页链接 (例: https://example.com)" spellcheck="false">
                 <button class="btn btn-primary" id="btn-add-url">➕ 添加</button>
             </div>
+            <p class="hint">悬停列表项，点击 📺 可强制所有展示页立即切换到该画面（切换后自动计时继续轮播）。</p>
         </div>
 
         <!-- Settings Card -->
@@ -633,6 +639,7 @@
                         <span class="index">${i + 1}</span>
                         <input type="text" value="${escapeHtml(url)}" spellcheck="false" data-index="${i}">
                         <div class="actions">
+                            <button class="cast" title="全员切换：所有展示页立即切换到此画面">📺</button>
                             <button class="move-up" title="上移">▲</button>
                             <button class="move-down" title="下移">▼</button>
                             <button class="delete" title="删除">✕</button>
@@ -641,6 +648,30 @@
 
                     // Input change
                     li.querySelector('input').addEventListener('input', () => markDirty());
+
+                    // Broadcast: force all display pages to switch to this URL
+                    li.querySelector('.cast').addEventListener('click', async () => {
+                        const url = li.querySelector('input').value.trim();
+                        if (!url) {
+                            showToast('该链接为空，无法切换', 'error');
+                            return;
+                        }
+                        try {
+                            const resp = await fetch('/api/force_page', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ url: url }),
+                            });
+                            const result = await resp.json();
+                            if (result.status === 'ok') {
+                                showToast('📺 已通知所有展示页切换到画面 ' + (i + 1) + '，轮播继续', 'success');
+                            } else {
+                                showToast('切换失败: ' + (result.message || ('HTTP ' + resp.status)), 'error');
+                            }
+                        } catch (e) {
+                            showToast('切换失败: ' + e.message, 'error');
+                        }
+                    });
 
                     // Move up
                     li.querySelector('.move-up').addEventListener('click', () => {

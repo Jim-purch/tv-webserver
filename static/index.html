@@ -1354,8 +1354,47 @@
                 musicPollTimer = setInterval(pollMusicCommand, 2000);
             }
 
+            // --- Force page polling (admin broadcasts: all clients switch to this page) ---
+            let lastForceVersion = null;
+
+            async function pollForcePage() {
+                try {
+                    const resp = await fetch('/api/force_page');
+                    const data = await resp.json();
+                    if (typeof data.version !== 'number') return;
+                    if (lastForceVersion === null) {
+                        // First poll after load: sync version only, old commands don't apply
+                        lastForceVersion = data.version;
+                        return;
+                    }
+                    if (data.version === lastForceVersion) return;
+                    lastForceVersion = data.version;
+                    if (!data.url) return;
+
+                    let idx = config.urls.indexOf(data.url);
+                    if (idx === -1) {
+                        // Config may be stale (list just changed); refresh once and retry
+                        const newConfig = await fetchConfig();
+                        if (newConfig) {
+                            idx = (newConfig.urls || []).indexOf(data.url);
+                        }
+                    }
+                    if (idx !== -1) {
+                        // Force switch; goToPage restarts the timer so rotation continues
+                        goToPage(idx);
+                    }
+                } catch (e) {
+                    // ignore polling errors
+                }
+            }
+
+            function startForcePagePolling() {
+                setInterval(pollForcePage, 2000);
+            }
+
             init();
             startMusicPolling();
+            startForcePagePolling();
         })();
     </script>
 </body>
